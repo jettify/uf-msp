@@ -262,6 +262,53 @@ impl<const N: usize> MspParser<N> {
         self.end = 0;
     }
 
+    /// Returns the currently unconsumed bytes in the spill buffer.
+    #[inline]
+    fn buffered(&self) -> &[u8] {
+        &self.buffer[self.start..self.end]
+    }
+
+    /// Returns `true` if there are unconsumed bytes in the spill buffer.
+    #[inline]
+    fn has_buffered(&self) -> bool {
+        self.start < self.end
+    }
+
+    /// Discards one byte from the spill buffer to scan for the next candidate frame.
+    #[inline]
+    fn skip_buffered_byte(&mut self) {
+        self.start += 1;
+    }
+
+    /// Compacts the spill buffer so remaining bytes begin at index 0.
+    #[inline]
+    fn compact(&mut self) {
+        if self.start > 0 {
+            self.buffer.copy_within(self.start..self.end, 0);
+            self.end -= self.start;
+            self.start = 0;
+        }
+    }
+
+    /// Consumes `length` bytes from the spill buffer as an [`MspFrame`].
+    #[inline]
+    fn consume_buffered_frame<'a>(&'a mut self, length: usize) -> MspFrame<'a> {
+        let begin = self.start;
+        self.start += length;
+        MspFrame {
+            bytes: &self.buffer[begin..self.start],
+        }
+    }
+
+    /// Copies up to `count` bytes from `input` into the spill buffer, advancing `input`.
+    #[inline]
+    fn pull_from_input(&mut self, input: &mut &[u8], count: usize) {
+        let take = count.min(input.len());
+        self.buffer[self.end..self.end + take].copy_from_slice(&input[..take]);
+        self.end += take;
+        *input = &input[take..];
+    }
+
     /// Returns the next valid frame and advances `input` past consumed bytes.
     ///
     /// Call repeatedly until `None`, which consumes all input and retains any
@@ -269,31 +316,24 @@ impl<const N: usize> MspParser<N> {
     /// frames retained during recovery from a corrupt candidate.
     ///
     /// The result borrows either the input or the spill buffer. Finish using it
-    /// before calling the parser again. No command or payload fields are decoded.
+    /// before calling the parser again.
     pub fn next<'a, 'input: 'a>(&'a mut self, input: &mut &'input [u8]) -> Option<MspFrame<'a>> {
         loop {
-            if self.start < self.end {
-                match inspect(&self.buffer[self.start..self.end]) {
-                    Candidate::Invalid => self.start += 1,
+            // Process any data currently in the spill buffer.
+            if self.has_buffered() {
+                match inspect(self.buffered()) {
+                    Candidate::Invalid => self.skip_buffered_byte(),
                     Candidate::Complete(length) => {
-                        let begin = self.start;
-                        self.start += length;
-                        return Some(MspFrame {
-                            bytes: &self.buffer[begin..self.start],
-                        });
+                        return Some(self.consume_buffered_frame(length));
                     }
                     Candidate::Incomplete(required) => {
                         if required > N {
-                            self.start += 1;
+                            // Candidate exceeds spill capacity; discard byte to resync.
+                            self.skip_buffered_byte();
                             continue;
                         }
-                        self.buffer.copy_within(self.start..self.end, 0);
-                        self.end -= self.start;
-                        self.start = 0;
-                        let take = (required - self.end).min(input.len());
-                        self.buffer[self.end..self.end + take].copy_from_slice(&input[..take]);
-                        self.end += take;
-                        *input = &input[take..];
+                        self.compact();
+                        self.pull_from_input(input, required - self.end);
                         if self.end < required {
                             return None;
                         }
@@ -302,10 +342,12 @@ impl<const N: usize> MspParser<N> {
                 continue;
             }
 
+            //Process input stream directly (zero-copy when contiguous).
             self.reset();
             if input.is_empty() {
                 return None;
             }
+
             match inspect(input) {
                 Candidate::Invalid => *input = &input[1..],
                 Candidate::Complete(length) => {
@@ -315,12 +357,12 @@ impl<const N: usize> MspParser<N> {
                 }
                 Candidate::Incomplete(required) => {
                     if required > N {
+                        // Candidate exceeds spill capacity; discard byte to resync.
                         *input = &input[1..];
                         continue;
                     }
-                    self.buffer[..input.len()].copy_from_slice(input);
-                    self.end = input.len();
-                    *input = &[];
+                    // Spill partial candidate into internal buffer to await rest of frame.
+                    self.pull_from_input(input, input.len());
                     return None;
                 }
             }
