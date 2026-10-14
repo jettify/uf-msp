@@ -1,0 +1,89 @@
+use std::io::{ErrorKind, Read, Write};
+use std::process::exit;
+use std::time::{Duration, Instant};
+use uf_msp::{CRC_LEN, HEADER_LEN, MspParser, PREAMBLE_LEN, crc8_dvbs2_slice};
+
+pub const MSP_FC_VARIANT: u16 = 2;
+pub const MSP_STATUS: u16 = 101;
+
+fn make_msp_v2_request(cmd: u16, payload: &[u8]) -> Vec<u8> {
+    let mut frame = Vec::with_capacity(HEADER_LEN + payload.len() + CRC_LEN);
+    frame.extend_from_slice(b"$X<");
+    frame.push(0); // flags
+    frame.extend_from_slice(&cmd.to_le_bytes());
+    let len = u16::try_from(payload.len()).unwrap_or(0);
+    frame.extend_from_slice(&len.to_le_bytes());
+    frame.extend_from_slice(payload);
+    let crc = crc8_dvbs2_slice(0, &frame[PREAMBLE_LEN..]);
+    frame.push(crc);
+    frame
+}
+
+fn main() {
+    let default_port = "/dev/tty.usbmodem00000000001B1";
+    let port_name = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| default_port.to_string());
+    println!("Using serial port: {port_name}");
+
+    let mut port = serialport::new(&port_name, 115_200)
+        .timeout(Duration::from_millis(10))
+        .open()
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to open serial port '{port_name}': {e}");
+            exit(1);
+        });
+
+    let mut buf = [0u8; 1024];
+    let mut parser = MspParser::<1024>::new();
+
+    // Send an initial request for FC variant
+    let init_req = make_msp_v2_request(MSP_FC_VARIANT, &[]);
+    if let Err(e) = port.write_all(&init_req) {
+        eprintln!("Failed to send initial request: {e}");
+    }
+
+    let poll_interval = Duration::from_millis(100);
+    let mut last_poll = Instant::now();
+
+    println!("Reading from serial port '{port_name}'...");
+    loop {
+        if last_poll.elapsed() >= poll_interval {
+            let req = make_msp_v2_request(MSP_STATUS, &[]);
+            if let Err(e) = port.write_all(&req) {
+                eprintln!("Error sending request: {e}");
+            }
+            last_poll = Instant::now();
+        }
+
+        match port.read(buf.as_mut_slice()) {
+            Ok(n) => {
+                let mut remaining = &buf[..n];
+                while let Some(frame) = parser.next(&mut remaining) {
+                    let packet = frame.packet();
+                    println!(
+                        "{:?} cmd={} flags=0x{:02x} len={} payload={:02X?}",
+                        packet.direction,
+                        packet.cmd,
+                        frame.flags(),
+                        packet.payload.len(),
+                        packet.payload
+                    );
+
+                    if packet.cmd == MSP_FC_VARIANT
+                        && let Ok(variant) = core::str::from_utf8(packet.payload)
+                    {
+                        println!("  -> Flight controller variant: {variant}");
+                    }
+                }
+            }
+            Err(ref e) if e.kind() == ErrorKind::TimedOut => {
+                // Expected when no data has arrived yet
+            }
+            Err(e) => {
+                eprintln!("Error reading from serial port: {e}");
+                break;
+            }
+        }
+    }
+}

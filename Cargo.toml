@@ -20,5 +20,13 @@ readme = "README.md"
 [dependencies]
 defmt = { version = "1.0.1", optional = true }
 
+[dev-dependencies]
+serialport = "4.7.1"
+
+[[example]]
+name = "raw"
+path = "examples/local_raw.rs"
+test = false
+
 [features]
 "defmt" = ["dep:defmt"]
