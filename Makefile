@@ -55,5 +55,4 @@ cov: ## Generate and open a code coverage report
 ci: ## Run local CI checks
 	$(MAKE) lint
 	$(MAKE) build
-	cargo test
 	$(MAKE) test
