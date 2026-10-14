@@ -41,6 +41,12 @@ pub const HEADER_LEN: usize = 8;
 /// Length of the CRC checksum field at the end of an MSP v2 frame.
 pub const CRC_LEN: usize = 1;
 
+/// Length of the 3-byte preamble: `$` (1), `X` (1), direction (1).
+pub const PREAMBLE_LEN: usize = 3;
+
+/// Byte offset in the header where the 16-bit little-endian payload length is located.
+pub const PAYLOAD_LEN_OFFSET: usize = 6;
+
 /// Minimum valid MSP v2 frame size (empty payload: 8-byte header + 1-byte CRC).
 pub const MIN_FRAME_LEN: usize = HEADER_LEN + CRC_LEN;
 
@@ -97,31 +103,33 @@ enum Candidate {
 }
 
 fn inspect(bytes: &[u8]) -> Candidate {
-    for (index, &byte) in bytes.iter().take(3).enumerate() {
-        let valid = match index {
-            0 => byte == b'$',
-            1 => byte == b'X',
-            _ => matches!(byte, b'<' | b'>' | b'!'),
-        };
-        if !valid {
-            return Candidate::Invalid;
+    match bytes {
+        // Preamble partial prefixes: valid start, but need full header to inspect frame length.
+        [] | [b'$'] | [b'$', b'X'] => Candidate::Incomplete(HEADER_LEN),
+        // Valid preamble: inspect header, payload length, and checksum.
+        [b'$', b'X', b'<' | b'>' | b'!', ..] => {
+            if bytes.len() < HEADER_LEN {
+                return Candidate::Incomplete(HEADER_LEN);
+            }
+            // Add MIN_FRAME_LEN as u32 so even a 16-bit target cannot overflow before checking usize.
+            let payload_len = u32::from(u16::from_le_bytes([
+                bytes[PAYLOAD_LEN_OFFSET],
+                bytes[PAYLOAD_LEN_OFFSET + 1],
+            ]));
+            let Ok(frame_len) = usize::try_from(payload_len + MIN_FRAME_LEN as u32) else {
+                return Candidate::Invalid;
+            };
+            if bytes.len() < frame_len {
+                return Candidate::Incomplete(frame_len);
+            }
+            let checksum_idx = frame_len - CRC_LEN;
+            if crc8_dvbs2_slice(0, &bytes[PREAMBLE_LEN..checksum_idx]) != bytes[checksum_idx] {
+                return Candidate::Invalid;
+            }
+            Candidate::Complete(frame_len)
         }
+        _ => Candidate::Invalid,
     }
-    if bytes.len() < 8 {
-        return Candidate::Incomplete(8);
-    }
-    // Use usize only after addition so even a 16-bit target cannot overflow.
-    let length = u32::from(u16::from_le_bytes([bytes[6], bytes[7]])) + 9;
-    let Ok(length) = usize::try_from(length) else {
-        return Candidate::Invalid;
-    };
-    if bytes.len() < length {
-        return Candidate::Incomplete(length);
-    }
-    if crc8_dvbs2_slice(0, &bytes[3..length - 1]) != bytes[length - 1] {
-        return Candidate::Invalid;
-    }
-    Candidate::Complete(length)
 }
 
 /// Splits a byte stream into validated native MSP v2 frames without allocation.
