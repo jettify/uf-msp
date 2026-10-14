@@ -32,20 +32,39 @@ pub struct MspPacket<'a> {
     pub payload: &'a [u8],
 }
 
+/// DVB-S2 CRC-8 polynomial: `x^8 + x^7 + x^6 + x^4 + x^2 + 1`.
+pub const CRC8_DVBS2_POLY: u8 = 0xD5;
+
+/// MSP v2 header length: `$` (1), `X` (1), direction (1), flag (1), cmd (2), payload length (2).
+pub const HEADER_LEN: usize = 8;
+
+/// Length of the CRC checksum field at the end of an MSP v2 frame.
+pub const CRC_LEN: usize = 1;
+
+/// Minimum valid MSP v2 frame size (empty payload: 8-byte header + 1-byte CRC).
+pub const MIN_FRAME_LEN: usize = HEADER_LEN + CRC_LEN;
+
+/// Updates a running CRC-8 (DVB-S2) with a single byte.
 #[inline]
-pub fn crc8_dvbs2_slice(initial: u8, data: &[u8]) -> u8 {
-    let mut crc = initial;
-    for &byte in data {
-        crc ^= byte;
-        for _ in 0..8 {
-            if (crc & 0x80) != 0 {
-                crc = (crc << 1) ^ 0xD5;
-            } else {
-                crc <<= 1;
-            }
+#[must_use]
+pub fn crc8_dvbs2_byte(mut crc: u8, byte: u8) -> u8 {
+    crc ^= byte;
+    for _ in 0..8 {
+        if (crc & 0x80) != 0 {
+            crc = (crc << 1) ^ CRC8_DVBS2_POLY;
+        } else {
+            crc <<= 1;
         }
     }
     crc
+}
+
+/// Computes the CRC-8 (DVB-S2) checksum over a byte slice with an initial value.
+#[inline]
+#[must_use]
+pub fn crc8_dvbs2_slice(initial: u8, data: &[u8]) -> u8 {
+    data.iter()
+        .fold(initial, |crc, &byte| crc8_dvbs2_byte(crc, byte))
 }
 
 /// A complete native MSP v2 frame with a valid header and checksum.
@@ -131,7 +150,10 @@ impl<const N: usize> MspParser<N> {
     #[must_use]
     pub const fn new() -> Self {
         const {
-            assert!(N >= 9, "MSP spill capacity must be at least 9 bytes");
+            assert!(
+                N >= MIN_FRAME_LEN,
+                "MSP spill capacity must be at least 9 bytes"
+            );
         }
         Self {
             buffer: [0; N],
@@ -238,6 +260,17 @@ mod tests {
         assert_eq!(crc8_dvbs2_slice(0, b"123456789"), 0xbc);
         let partial = crc8_dvbs2_slice(0, b"1234");
         assert_eq!(crc8_dvbs2_slice(partial, b"56789"), 0xbc);
+    }
+
+    #[test]
+    fn checksum_byte_matches_slice() {
+        let data = b"123456789";
+        let mut crc = 0;
+        for &byte in data {
+            crc = crc8_dvbs2_byte(crc, byte);
+        }
+        assert_eq!(crc, crc8_dvbs2_slice(0, data));
+        assert_eq!(crc, 0xbc);
     }
 
     #[test]
