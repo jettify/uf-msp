@@ -1,0 +1,24 @@
+[package]
+name = "uf-msp"
+version = "0.1.0"
+edition = "2024"
+
+description = "A `no_std` Rust library"
+categories = [
+  "embedded",
+  "no-std",
+  "aerospace::drones",
+  "aerospace::unmanned-aerial-vehicles",
+]
+authors = ["Nickolai Novik <nickolainovik@gmail.com>"]
+license = "Apache-2.0"
+homepage = "https://github.com/jettify/uf-msp"
+repository = "https://github.com/jettify/uf-msp"
+readme = "README.md"
+
+
+[dependencies]
+defmt = { version = "1.0.1", optional = true }
+
+[features]
+"defmt" = ["dep:defmt"]
