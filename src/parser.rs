@@ -44,6 +44,15 @@ pub const CRC_LEN: usize = 1;
 /// Length of the 3-byte preamble: `$` (1), `X` (1), direction (1).
 pub const PREAMBLE_LEN: usize = 3;
 
+/// Byte offset of the direction indicator (`<`, `>`, `!`).
+pub const DIRECTION_OFFSET: usize = 2;
+
+/// Byte offset of the 8-bit flags field.
+pub const FLAGS_OFFSET: usize = 3;
+
+/// Byte offset of the 16-bit little-endian command ID.
+pub const CMD_OFFSET: usize = 4;
+
 /// Byte offset in the header where the 16-bit little-endian payload length is located.
 pub const PAYLOAD_LEN_OFFSET: usize = 6;
 
@@ -83,9 +92,72 @@ pub struct MspFrame<'a> {
 }
 
 impl<'a> MspFrame<'a> {
+    /// Validates a standalone byte slice as a complete MSP v2 frame.
+    #[must_use]
+    pub fn from_slice(bytes: &'a [u8]) -> Option<Self> {
+        match inspect(bytes) {
+            Candidate::Complete(len) if len == bytes.len() => Some(Self { bytes }),
+            _ => None,
+        }
+    }
+
     /// Returns the complete wire frame, including its checksum.
     #[must_use]
     pub fn as_bytes(&self) -> &'a [u8] {
+        self.bytes
+    }
+
+    /// Returns the direction of this frame (request, response, or error).
+    #[must_use]
+    pub fn direction(&self) -> MspDirection {
+        match self.bytes[DIRECTION_OFFSET] {
+            b'<' => MspDirection::Request,
+            b'>' => MspDirection::Response,
+            b'!' => MspDirection::Error,
+            _ => unreachable!("validated frame has a valid direction byte"),
+        }
+    }
+
+    /// Returns the 8-bit flag field.
+    #[must_use]
+    pub fn flags(&self) -> u8 {
+        self.bytes[FLAGS_OFFSET]
+    }
+
+    /// Returns the 16-bit command ID.
+    #[must_use]
+    pub fn cmd(&self) -> u16 {
+        u16::from_le_bytes([self.bytes[CMD_OFFSET], self.bytes[CMD_OFFSET + 1]])
+    }
+
+    /// Returns the payload slice borrowing directly from the frame.
+    #[must_use]
+    pub fn payload(&self) -> &'a [u8] {
+        &self.bytes[HEADER_LEN..self.bytes.len() - CRC_LEN]
+    }
+
+    /// Returns the CRC checksum byte at the end of the frame.
+    #[must_use]
+    pub fn checksum(&self) -> u8 {
+        self.bytes[self.bytes.len() - CRC_LEN]
+    }
+
+    /// Decodes the frame into a zero-copy [`MspPacket`].
+    #[must_use]
+    pub fn packet(&self) -> MspPacket<'a> {
+        MspPacket {
+            version: MspVersion::V2,
+            direction: self.direction(),
+            cmd: self.cmd(),
+            payload: self.payload(),
+        }
+    }
+}
+
+impl core::ops::Deref for MspFrame<'_> {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
         self.bytes
     }
 }
@@ -93,6 +165,20 @@ impl<'a> MspFrame<'a> {
 impl AsRef<[u8]> for MspFrame<'_> {
     fn as_ref(&self) -> &[u8] {
         self.bytes
+    }
+}
+
+impl<'a> From<MspFrame<'a>> for MspPacket<'a> {
+    fn from(frame: MspFrame<'a>) -> Self {
+        frame.packet()
+    }
+}
+
+impl<'a> TryFrom<&'a [u8]> for MspFrame<'a> {
+    type Error = ();
+
+    fn try_from(bytes: &'a [u8]) -> Result<Self, Self::Error> {
+        Self::from_slice(bytes).ok_or(())
     }
 }
 
@@ -494,5 +580,38 @@ mod tests {
         let bytes = frame(&[]);
         assert!(parser.next(&mut &bytes[..8]).is_none());
         assert_eq!(parser.next(&mut &bytes[8..]).unwrap().as_bytes(), bytes);
+    }
+
+    #[test]
+    fn frame_field_accessors_and_packet_conversion() {
+        let payload = b"status_ok";
+        let bytes = frame(payload);
+        let frame = MspFrame::from_slice(&bytes).expect("valid frame");
+
+        assert_eq!(frame.as_bytes(), bytes.as_slice());
+        assert_eq!(&frame[..], bytes.as_slice()); // Deref test
+        assert_eq!(frame.direction(), MspDirection::Response);
+        assert_eq!(frame.flags(), 0);
+        assert_eq!(frame.cmd(), 42);
+        assert_eq!(frame.payload(), payload);
+        assert_eq!(frame.checksum(), *bytes.last().unwrap());
+
+        let packet = frame.packet();
+        assert_eq!(packet.version, MspVersion::V2);
+        assert_eq!(packet.direction, MspDirection::Response);
+        assert_eq!(packet.cmd, 42);
+        assert_eq!(packet.payload, payload);
+
+        let packet_from: MspPacket = frame.into();
+        assert_eq!(packet_from, packet);
+    }
+
+    #[test]
+    fn frame_from_slice_invalid_inputs() {
+        assert!(MspFrame::from_slice(b"").is_none());
+        assert!(MspFrame::from_slice(b"$X").is_none());
+        let mut corrupt = frame(b"test");
+        *corrupt.last_mut().unwrap() ^= 1;
+        assert!(MspFrame::from_slice(&corrupt).is_none());
     }
 }

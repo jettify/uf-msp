@@ -5,6 +5,7 @@
 mod parser;
 
 pub use parser::{
-    CRC_LEN, CRC8_DVBS2_POLY, HEADER_LEN, MIN_FRAME_LEN, MspDirection, MspFrame, MspPacket,
-    MspParser, MspVersion, PAYLOAD_LEN_OFFSET, PREAMBLE_LEN, crc8_dvbs2_byte, crc8_dvbs2_slice,
+    CMD_OFFSET, CRC_LEN, CRC8_DVBS2_POLY, DIRECTION_OFFSET, FLAGS_OFFSET, HEADER_LEN,
+    MIN_FRAME_LEN, MspDirection, MspFrame, MspPacket, MspParser, MspVersion, PAYLOAD_LEN_OFFSET,
+    PREAMBLE_LEN, crc8_dvbs2_byte, crc8_dvbs2_slice,
 };
