@@ -21,7 +21,7 @@ readme = "README.md"
 defmt = { version = "1.0.1", optional = true }
 
 [dev-dependencies]
-serialport = "4.7.1"
+serialport = "4.10.1"
 
 [[example]]
 name = "raw"
