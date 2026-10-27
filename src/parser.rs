@@ -82,23 +82,102 @@ pub fn crc8_dvbs2_slice(initial: u8, data: &[u8]) -> u8 {
         .fold(initial, |crc, &byte| crc8_dvbs2_byte(crc, byte))
 }
 
+/// Why a standalone byte slice could not be validated as an MSP v2 frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum MspFrameError {
+    /// More bytes are needed; `required` is the next validation threshold.
+    Incomplete { required: usize, actual: usize },
+    /// The frame does not begin with `$X`.
+    InvalidPreamble,
+    /// The direction byte is neither `<`, `>`, nor `!`.
+    InvalidDirection,
+    /// The complete frame length cannot be represented on this target.
+    LengthOverflow,
+    /// A complete frame is followed by additional bytes.
+    LengthMismatch { expected: usize, actual: usize },
+    /// The wire checksum differs from the calculated checksum.
+    ChecksumMismatch { expected: u8, actual: u8 },
+}
+
+impl core::fmt::Display for MspFrameError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Incomplete { required, actual } => {
+                write!(
+                    f,
+                    "incomplete MSP frame: need {required} bytes, got {actual}"
+                )
+            }
+            Self::InvalidPreamble => f.write_str("invalid MSP v2 preamble"),
+            Self::InvalidDirection => f.write_str("invalid MSP direction"),
+            Self::LengthOverflow => f.write_str("MSP frame length exceeds target address space"),
+            Self::LengthMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "MSP frame length mismatch: expected {expected} bytes, got {actual}"
+                )
+            }
+            Self::ChecksumMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "MSP checksum mismatch: expected {expected:#04x}, got {actual:#04x}"
+                )
+            }
+        }
+    }
+}
+
+impl core::error::Error for MspFrameError {}
+
+/// An internal parser failure, distinct from recoverable malformed wire data.
+///
+/// Reset or replace the parser before continuing after an error. Input may have
+/// advanced before the error was reported.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum MspParserError {
+    /// Buffer positions or a requested frame range violate the parser invariant.
+    InvalidBufferState,
+    /// A requested append would exceed the spill buffer capacity.
+    BufferCapacityExceeded,
+}
+
+impl core::fmt::Display for MspParserError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::InvalidBufferState => f.write_str("invalid MSP parser buffer state"),
+            Self::BufferCapacityExceeded => {
+                f.write_str("MSP parser spill buffer capacity exceeded")
+            }
+        }
+    }
+}
+
+impl core::error::Error for MspParserError {}
+
 /// A complete native MSP v2 frame with a valid header and checksum.
 ///
 /// The borrowed bytes include the header, payload, and checksum. Construction is
-/// private so this type always represents a validated frame; fields are not decoded.
+/// private so this type always represents a validated frame. Header fields are
+/// decoded during validation; payload and wire bytes remain borrowed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MspFrame<'a> {
     bytes: &'a [u8],
+    direction: MspDirection,
+    flags: u8,
+    cmd: u16,
+    payload: &'a [u8],
+    checksum: u8,
 }
 
 impl<'a> MspFrame<'a> {
     /// Validates a standalone byte slice as a complete MSP v2 frame.
+    ///
+    /// Discards validation diagnostics. Use [`Self::try_from`] for detailed errors.
     #[must_use]
     pub fn from_slice(bytes: &'a [u8]) -> Option<Self> {
-        match inspect(bytes) {
-            Candidate::Complete(len) if len == bytes.len() => Some(Self { bytes }),
-            _ => None,
-        }
+        Self::try_from(bytes).ok()
     }
 
     /// Returns the complete wire frame, including its checksum.
@@ -110,36 +189,31 @@ impl<'a> MspFrame<'a> {
     /// Returns the direction of this frame (request, response, or error).
     #[must_use]
     pub fn direction(&self) -> MspDirection {
-        match self.bytes[DIRECTION_OFFSET] {
-            b'<' => MspDirection::Request,
-            b'>' => MspDirection::Response,
-            b'!' => MspDirection::Error,
-            _ => unreachable!("validated frame has a valid direction byte"),
-        }
+        self.direction
     }
 
     /// Returns the 8-bit flag field.
     #[must_use]
     pub fn flags(&self) -> u8 {
-        self.bytes[FLAGS_OFFSET]
+        self.flags
     }
 
     /// Returns the 16-bit command ID.
     #[must_use]
     pub fn cmd(&self) -> u16 {
-        u16::from_le_bytes([self.bytes[CMD_OFFSET], self.bytes[CMD_OFFSET + 1]])
+        self.cmd
     }
 
     /// Returns the payload slice borrowing directly from the frame.
     #[must_use]
     pub fn payload(&self) -> &'a [u8] {
-        &self.bytes[HEADER_LEN..self.bytes.len() - CRC_LEN]
+        self.payload
     }
 
     /// Returns the CRC checksum byte at the end of the frame.
     #[must_use]
     pub fn checksum(&self) -> u8 {
-        self.bytes[self.bytes.len() - CRC_LEN]
+        self.checksum
     }
 
     /// Decodes the frame into a zero-copy [`MspPacket`].
@@ -175,46 +249,128 @@ impl<'a> From<MspFrame<'a>> for MspPacket<'a> {
 }
 
 impl<'a> TryFrom<&'a [u8]> for MspFrame<'a> {
-    type Error = ();
+    type Error = MspFrameError;
 
     fn try_from(bytes: &'a [u8]) -> Result<Self, Self::Error> {
-        Self::from_slice(bytes).ok_or(())
+        match inspect(bytes) {
+            Candidate::Invalid(error) => Err(error),
+            Candidate::Incomplete(required) => Err(MspFrameError::Incomplete {
+                required,
+                actual: bytes.len(),
+            }),
+            Candidate::Complete(frame) => frame.borrow(bytes),
+        }
+    }
+}
+
+/// Owned validation result, so inspection does not borrow across buffer mutation.
+/// Only `inspect` constructs this after checking the complete frame and CRC.
+struct ValidatedFrame {
+    len: usize,
+    direction: MspDirection,
+    flags: u8,
+    cmd: u16,
+    checksum: u8,
+}
+
+impl ValidatedFrame {
+    /// Attaches the validated fields to the exact bytes that were inspected.
+    /// Callers must preserve those bytes between inspection and borrowing.
+    fn borrow(self, bytes: &[u8]) -> Result<MspFrame<'_>, MspFrameError> {
+        if bytes.len() != self.len {
+            return Err(MspFrameError::LengthMismatch {
+                expected: self.len,
+                actual: bytes.len(),
+            });
+        }
+        let payload = bytes
+            .get(HEADER_LEN..)
+            .and_then(|body| body.split_last())
+            .map(|(_, payload)| payload)
+            .ok_or(MspFrameError::Incomplete {
+                required: MIN_FRAME_LEN,
+                actual: bytes.len(),
+            })?;
+        Ok(MspFrame {
+            bytes,
+            direction: self.direction,
+            flags: self.flags,
+            cmd: self.cmd,
+            payload,
+            checksum: self.checksum,
+        })
     }
 }
 
 enum Candidate {
-    Invalid,
+    Invalid(MspFrameError),
     Incomplete(usize),
-    Complete(usize),
+    Complete(ValidatedFrame),
 }
 
 fn inspect(bytes: &[u8]) -> Candidate {
     match bytes {
         // Preamble partial prefixes: valid start, but need full header to inspect frame length.
-        [] | [b'$'] | [b'$', b'X'] => Candidate::Incomplete(HEADER_LEN),
-        // Valid preamble: inspect header, payload length, and checksum.
-        [b'$', b'X', b'<' | b'>' | b'!', ..] => {
-            if bytes.len() < HEADER_LEN {
+        []
+        | [b'$']
+        | [b'$', b'X']
+        | [b'$', b'X', b'<' | b'>' | b'!']
+        | [b'$', b'X', b'<' | b'>' | b'!', _]
+        | [b'$', b'X', b'<' | b'>' | b'!', _, _]
+        | [b'$', b'X', b'<' | b'>' | b'!', _, _, _]
+        | [b'$', b'X', b'<' | b'>' | b'!', _, _, _, _] => Candidate::Incomplete(HEADER_LEN),
+        // Valid header: inspect payload length and checksum.
+        [b'$', b'X', b'<' | b'>' | b'!', _, _, _, _, _, ..] => {
+            let Some(header) = bytes
+                .get(..HEADER_LEN)
+                .and_then(|header| <&[u8; HEADER_LEN]>::try_from(header).ok())
+            else {
                 return Candidate::Incomplete(HEADER_LEN);
-            }
+            };
+            let &[_, _, direction, flags, cmd_lo, cmd_hi, len_lo, len_hi] = header;
+            let Some(direction) = MspDirection::from_byte(direction) else {
+                return Candidate::Invalid(MspFrameError::InvalidDirection);
+            };
+            let cmd = u16::from_le_bytes([cmd_lo, cmd_hi]);
             // Add MIN_FRAME_LEN as u32 so even a 16-bit target cannot overflow before checking usize.
-            let payload_len = u32::from(u16::from_le_bytes([
-                bytes[PAYLOAD_LEN_OFFSET],
-                bytes[PAYLOAD_LEN_OFFSET + 1],
-            ]));
-            let Ok(frame_len) = usize::try_from(payload_len + MIN_FRAME_LEN as u32) else {
-                return Candidate::Invalid;
+            let payload_len = u32::from(u16::from_le_bytes([len_lo, len_hi]));
+            let min_frame_len = u32::try_from(MIN_FRAME_LEN).unwrap_or(9);
+            let Ok(frame_len) = usize::try_from(payload_len + min_frame_len) else {
+                return Candidate::Invalid(MspFrameError::LengthOverflow);
             };
             if bytes.len() < frame_len {
                 return Candidate::Incomplete(frame_len);
             }
             let checksum_idx = frame_len - CRC_LEN;
-            if crc8_dvbs2_slice(0, &bytes[PREAMBLE_LEN..checksum_idx]) != bytes[checksum_idx] {
-                return Candidate::Invalid;
+            let Some(crc_slice) = bytes.get(PREAMBLE_LEN..checksum_idx) else {
+                return Candidate::Invalid(MspFrameError::LengthMismatch {
+                    expected: frame_len,
+                    actual: bytes.len(),
+                });
+            };
+            let Some(&expected_crc) = bytes.get(checksum_idx) else {
+                return Candidate::Invalid(MspFrameError::LengthMismatch {
+                    expected: frame_len,
+                    actual: bytes.len(),
+                });
+            };
+            let calculated_crc = crc8_dvbs2_slice(0, crc_slice);
+            if calculated_crc != expected_crc {
+                return Candidate::Invalid(MspFrameError::ChecksumMismatch {
+                    expected: calculated_crc,
+                    actual: expected_crc,
+                });
             }
-            Candidate::Complete(frame_len)
+            Candidate::Complete(ValidatedFrame {
+                len: frame_len,
+                direction,
+                flags,
+                cmd,
+                checksum: expected_crc,
+            })
         }
-        _ => Candidate::Invalid,
+        [b'$', b'X', _, ..] => Candidate::Invalid(MspFrameError::InvalidDirection),
+        _ => Candidate::Invalid(MspFrameError::InvalidPreamble),
     }
 }
 
@@ -264,8 +420,10 @@ impl<const N: usize> MspParser<N> {
 
     /// Returns the currently unconsumed bytes in the spill buffer.
     #[inline]
-    fn buffered(&self) -> &[u8] {
-        &self.buffer[self.start..self.end]
+    fn buffered(&self) -> Result<&[u8], MspParserError> {
+        self.buffer
+            .get(self.start..self.end)
+            .ok_or(MspParserError::InvalidBufferState)
     }
 
     /// Returns `true` if there are unconsumed bytes in the spill buffer.
@@ -290,41 +448,80 @@ impl<const N: usize> MspParser<N> {
         }
     }
 
-    /// Consumes `length` bytes from the spill buffer as an [`MspFrame`].
+    /// Borrows an inspected frame from the spill buffer and consumes its bytes.
     #[inline]
-    fn consume_buffered_frame<'a>(&'a mut self, length: usize) -> MspFrame<'a> {
-        let begin = self.start;
-        self.start += length;
-        MspFrame {
-            bytes: &self.buffer[begin..self.start],
+    fn consume_buffered_frame(
+        &mut self,
+        frame: ValidatedFrame,
+    ) -> Result<MspFrame<'_>, MspParserError> {
+        let end = self
+            .start
+            .checked_add(frame.len)
+            .ok_or(MspParserError::InvalidBufferState)?;
+        if end > self.end {
+            return Err(MspParserError::InvalidBufferState);
         }
+        let bytes = self
+            .buffer
+            .get(self.start..end)
+            .ok_or(MspParserError::InvalidBufferState)?;
+        let frame = frame
+            .borrow(bytes)
+            .map_err(|_invalid_frame| MspParserError::InvalidBufferState)?;
+        self.start = end;
+        Ok(frame)
     }
 
     /// Copies up to `count` bytes from `input` into the spill buffer, advancing `input`.
     #[inline]
-    fn pull_from_input(&mut self, input: &mut &[u8], count: usize) {
+    fn pull_from_input(&mut self, input: &mut &[u8], count: usize) -> Result<(), MspParserError> {
+        if self.start > self.end || self.end > N {
+            return Err(MspParserError::InvalidBufferState);
+        }
         let take = count.min(input.len());
-        self.buffer[self.end..self.end + take].copy_from_slice(&input[..take]);
-        self.end += take;
-        *input = &input[take..];
+        let end = self
+            .end
+            .checked_add(take)
+            .ok_or(MspParserError::BufferCapacityExceeded)?;
+        let dst = self
+            .buffer
+            .get_mut(self.end..end)
+            .ok_or(MspParserError::BufferCapacityExceeded)?;
+        let (head, tail) = input.split_at(take);
+        dst.copy_from_slice(head);
+        self.end = end;
+        *input = tail;
+        Ok(())
     }
 
     /// Returns the next valid frame and advances `input` past consumed bytes.
     ///
-    /// Call repeatedly until `None`, which consumes all input and retains any
+    /// Call repeatedly until `Ok(None)`, which consumes all input and retains any
     /// incomplete candidate that fits the spill buffer. Empty input can drain
     /// frames retained during recovery from a corrupt candidate.
     ///
     /// The result borrows either the input or the spill buffer. Finish using it
     /// before calling the parser again.
-    pub fn next<'a, 'input: 'a>(&'a mut self, input: &mut &'input [u8]) -> Option<MspFrame<'a>> {
+    ///
+    /// # Errors
+    ///
+    /// Reports invalid internal buffer state or an impossible append. Malformed
+    /// wire candidates are skipped without returning an error. After an error,
+    /// reset or replace the parser; input may already have advanced.
+    pub fn next<'a, 'input: 'a>(
+        &'a mut self,
+        input: &mut &'input [u8],
+    ) -> Result<Option<MspFrame<'a>>, MspParserError> {
+        if self.start > self.end || self.end > N {
+            return Err(MspParserError::InvalidBufferState);
+        }
         loop {
             // Process any data currently in the spill buffer.
             if self.has_buffered() {
-                match inspect(self.buffered()) {
-                    Candidate::Invalid => self.skip_buffered_byte(),
-                    Candidate::Complete(length) => {
-                        return Some(self.consume_buffered_frame(length));
+                match inspect(self.buffered()?) {
+                    Candidate::Invalid(_) => self.skip_buffered_byte(),
+                    Candidate::Complete(frame) => {
+                        return self.consume_buffered_frame(frame).map(Some);
                     }
                     Candidate::Incomplete(required) => {
                         if required > N {
@@ -333,37 +530,45 @@ impl<const N: usize> MspParser<N> {
                             continue;
                         }
                         self.compact();
-                        self.pull_from_input(input, required - self.end);
+                        self.pull_from_input(input, required - self.end)?;
                         if self.end < required {
-                            return None;
+                            return Ok(None);
                         }
                     }
                 }
                 continue;
             }
 
-            //Process input stream directly (zero-copy when contiguous).
+            // Process input stream directly (zero-copy when contiguous).
             self.reset();
             if input.is_empty() {
-                return None;
+                return Ok(None);
             }
 
             match inspect(input) {
-                Candidate::Invalid => *input = &input[1..],
-                Candidate::Complete(length) => {
-                    let (bytes, remaining) = input.split_at(length);
+                Candidate::Invalid(_) => *input = input.get(1..).unwrap_or(&[]),
+                Candidate::Complete(frame) => {
+                    let bytes = input
+                        .get(..frame.len)
+                        .ok_or(MspParserError::InvalidBufferState)?;
+                    let remaining = input
+                        .get(frame.len..)
+                        .ok_or(MspParserError::InvalidBufferState)?;
+                    let frame = frame
+                        .borrow(bytes)
+                        .map_err(|_invalid_frame| MspParserError::InvalidBufferState)?;
                     *input = remaining;
-                    return Some(MspFrame { bytes });
+                    return Ok(Some(frame));
                 }
                 Candidate::Incomplete(required) => {
                     if required > N {
                         // Candidate exceeds spill capacity; discard byte to resync.
-                        *input = &input[1..];
+                        *input = input.get(1..).unwrap_or(&[]);
                         continue;
                     }
                     // Spill partial candidate into internal buffer to await rest of frame.
-                    self.pull_from_input(input, input.len());
-                    return None;
+                    self.pull_from_input(input, input.len())?;
+                    return Ok(None);
                 }
             }
         }
@@ -377,6 +582,12 @@ impl<const N: usize> Default for MspParser<N> {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    reason = "tests use unwrap, expect, and direct slice indexing for conciseness"
+)]
 mod tests {
     extern crate std;
 
@@ -417,13 +628,24 @@ mod tests {
             let spill_ptr = parser.buffer.as_ptr();
             let mut first = &bytes[..split];
             if split == bytes.len() {
-                let result = parser.next(&mut first).unwrap();
+                let result = parser
+                    .next(&mut first)
+                    .expect("valid parser state")
+                    .unwrap();
                 assert_eq!(result.as_bytes().as_ptr(), bytes.as_ptr());
                 assert_eq!(result.as_bytes(), bytes);
             } else {
-                assert!(parser.next(&mut first).is_none());
+                assert!(
+                    parser
+                        .next(&mut first)
+                        .expect("valid parser state")
+                        .is_none()
+                );
                 let mut second = &bytes[split..];
-                let result = parser.next(&mut second).unwrap();
+                let result = parser
+                    .next(&mut second)
+                    .expect("valid parser state")
+                    .unwrap();
                 assert_eq!(result.as_bytes(), bytes);
                 assert_eq!(result.as_ref(), bytes);
                 assert_eq!(
@@ -437,7 +659,12 @@ mod tests {
                 assert_eq!(second, []);
             }
             assert_eq!(first, []);
-            assert!(parser.next(&mut &[][..]).is_none());
+            assert!(
+                parser
+                    .next(&mut &[][..])
+                    .expect("valid parser state")
+                    .is_none()
+            );
         }
     }
 
@@ -447,7 +674,7 @@ mod tests {
         let mut parser = MspParser::<14>::new();
         for (index, byte) in bytes.iter().enumerate() {
             let mut input = core::slice::from_ref(byte);
-            let result = parser.next(&mut input);
+            let result = parser.next(&mut input).expect("valid parser state");
             if index == bytes.len() - 1 {
                 assert_eq!(result.unwrap().as_bytes(), bytes);
             } else {
@@ -466,18 +693,40 @@ mod tests {
         let mut input = stream.as_slice();
         let mut parser = MspParser::<32>::default();
         assert_eq!(
-            parser.next(&mut input).unwrap().as_bytes().as_ptr(),
+            parser
+                .next(&mut input)
+                .expect("valid parser state")
+                .unwrap()
+                .as_bytes()
+                .as_ptr(),
             stream.as_ptr()
         );
         assert_eq!(input.len(), bytes.len() + 5);
         assert_eq!(
-            parser.next(&mut input).unwrap().as_bytes().as_ptr(),
+            parser
+                .next(&mut input)
+                .expect("valid parser state")
+                .unwrap()
+                .as_bytes()
+                .as_ptr(),
             stream[bytes.len()..].as_ptr()
         );
-        assert!(parser.next(&mut input).is_none());
+        assert!(
+            parser
+                .next(&mut input)
+                .expect("valid parser state")
+                .is_none()
+        );
         assert_eq!(input, []);
         let mut tail = &bytes[5..];
-        assert_eq!(parser.next(&mut tail).unwrap().as_bytes(), bytes);
+        assert_eq!(
+            parser
+                .next(&mut tail)
+                .expect("valid parser state")
+                .unwrap()
+                .as_bytes(),
+            bytes
+        );
         assert_eq!(tail, []);
     }
 
@@ -485,14 +734,31 @@ mod tests {
     fn spill_completion_leaves_next_frame_in_input() {
         let bytes = frame(b"hello");
         let mut parser = MspParser::<32>::new();
-        assert!(parser.next(&mut &bytes[..4]).is_none());
+        assert!(
+            parser
+                .next(&mut &bytes[..4])
+                .expect("valid parser state")
+                .is_none()
+        );
         let mut rest = bytes[4..].to_vec();
         rest.extend_from_slice(&bytes);
         let mut input = rest.as_slice();
-        assert_eq!(parser.next(&mut input).unwrap().as_bytes(), bytes);
+        assert_eq!(
+            parser
+                .next(&mut input)
+                .expect("valid parser state")
+                .unwrap()
+                .as_bytes(),
+            bytes
+        );
         assert_eq!(input, bytes);
         assert_eq!(
-            parser.next(&mut input).unwrap().as_bytes().as_ptr(),
+            parser
+                .next(&mut input)
+                .expect("valid parser state")
+                .unwrap()
+                .as_bytes()
+                .as_ptr(),
             rest[bytes.len() - 4..].as_ptr()
         );
     }
@@ -504,7 +770,11 @@ mod tests {
             bytes[2] = direction;
             let mut parser = MspParser::<9>::new();
             assert_eq!(
-                parser.next(&mut bytes.as_slice()).unwrap().as_bytes(),
+                parser
+                    .next(&mut bytes.as_slice())
+                    .expect("valid parser state")
+                    .unwrap()
+                    .as_bytes(),
                 bytes
             );
         }
@@ -520,7 +790,14 @@ mod tests {
         stream.extend_from_slice(&bytes);
         let mut parser = MspParser::<32>::new();
         let mut input = stream.as_slice();
-        assert_eq!(parser.next(&mut input).unwrap().as_bytes(), bytes);
+        assert_eq!(
+            parser
+                .next(&mut input)
+                .expect("valid parser state")
+                .unwrap()
+                .as_bytes(),
+            bytes
+        );
         assert_eq!(input, []);
     }
 
@@ -535,11 +812,35 @@ mod tests {
         *outer.last_mut().unwrap() = u8::from(checksum == 0);
         for split in 0..outer.len() {
             let mut parser = MspParser::<32>::new();
-            assert!(parser.next(&mut &outer[..split]).is_none());
+            assert!(
+                parser
+                    .next(&mut &outer[..split])
+                    .expect("valid parser state")
+                    .is_none()
+            );
             let mut input = &outer[split..];
-            assert_eq!(parser.next(&mut input).unwrap().as_bytes(), inner);
-            assert_eq!(parser.next(&mut input).unwrap().as_bytes(), inner);
-            assert!(parser.next(&mut input).is_none());
+            assert_eq!(
+                parser
+                    .next(&mut input)
+                    .expect("valid parser state")
+                    .unwrap()
+                    .as_bytes(),
+                inner
+            );
+            assert_eq!(
+                parser
+                    .next(&mut input)
+                    .expect("valid parser state")
+                    .unwrap()
+                    .as_bytes(),
+                inner
+            );
+            assert!(
+                parser
+                    .next(&mut input)
+                    .expect("valid parser state")
+                    .is_none()
+            );
             assert_eq!(input, []);
         }
     }
@@ -552,10 +853,32 @@ mod tests {
         assert_ne!(*outer.last().unwrap(), inner[5]);
         *outer.last_mut().unwrap() = inner[5];
         let mut parser = MspParser::<32>::new();
-        assert!(parser.next(&mut &outer[..8]).is_none());
-        assert!(parser.next(&mut &outer[8..]).is_none());
-        assert!(parser.next(&mut &[][..]).is_none());
-        assert_eq!(parser.next(&mut &inner[6..]).unwrap().as_bytes(), inner);
+        assert!(
+            parser
+                .next(&mut &outer[..8])
+                .expect("valid parser state")
+                .is_none()
+        );
+        assert!(
+            parser
+                .next(&mut &outer[8..])
+                .expect("valid parser state")
+                .is_none()
+        );
+        assert!(
+            parser
+                .next(&mut &[][..])
+                .expect("valid parser state")
+                .is_none()
+        );
+        assert_eq!(
+            parser
+                .next(&mut &inner[6..])
+                .expect("valid parser state")
+                .unwrap()
+                .as_bytes(),
+            inner
+        );
     }
 
     #[test]
@@ -563,7 +886,10 @@ mod tests {
         let bytes = frame(&std::vec![0; usize::from(u16::MAX)]);
         let mut parser = MspParser::<9>::new();
         let mut input = bytes.as_slice();
-        let result = parser.next(&mut input).unwrap();
+        let result = parser
+            .next(&mut input)
+            .expect("valid parser state")
+            .unwrap();
         assert_eq!(result.as_bytes(), bytes);
         assert_eq!(result.as_bytes().as_ptr(), bytes.as_ptr());
         assert_eq!(input, []);
@@ -575,11 +901,23 @@ mod tests {
         let valid = frame(&[]);
         for split in 1..oversized.len() {
             let mut parser = MspParser::<9>::new();
-            assert!(parser.next(&mut &oversized[..split]).is_none());
+            assert!(
+                parser
+                    .next(&mut &oversized[..split])
+                    .expect("valid parser state")
+                    .is_none()
+            );
             let mut tail = oversized[split..].to_vec();
             tail.extend_from_slice(&valid);
             let mut input = tail.as_slice();
-            assert_eq!(parser.next(&mut input).unwrap().as_bytes(), valid);
+            assert_eq!(
+                parser
+                    .next(&mut input)
+                    .expect("valid parser state")
+                    .unwrap()
+                    .as_bytes(),
+                valid
+            );
             assert_eq!(input, []);
         }
     }
@@ -591,7 +929,14 @@ mod tests {
         stream.extend_from_slice(&valid);
         let mut parser = MspParser::<9>::new();
         let mut input = stream.as_slice();
-        assert_eq!(parser.next(&mut input).unwrap().as_bytes(), valid);
+        assert_eq!(
+            parser
+                .next(&mut input)
+                .expect("valid parser state")
+                .unwrap()
+                .as_bytes(),
+            valid
+        );
         assert_eq!(input, []);
     }
 
@@ -599,11 +944,25 @@ mod tests {
     fn reset_discards_partial_frame() {
         let bytes = frame(b"hello");
         let mut parser = MspParser::<32>::new();
-        assert!(parser.next(&mut &bytes[..8]).is_none());
+        assert!(
+            parser
+                .next(&mut &bytes[..8])
+                .expect("valid parser state")
+                .is_none()
+        );
         parser.reset();
-        assert!(parser.next(&mut &bytes[8..]).is_none());
+        assert!(
+            parser
+                .next(&mut &bytes[8..])
+                .expect("valid parser state")
+                .is_none()
+        );
         assert_eq!(
-            parser.next(&mut bytes.as_slice()).unwrap().as_bytes(),
+            parser
+                .next(&mut bytes.as_slice())
+                .expect("valid parser state")
+                .unwrap()
+                .as_bytes(),
             bytes
         );
     }
@@ -611,8 +970,18 @@ mod tests {
     #[test]
     fn empty_input() {
         let mut parser = MspParser::<9>::new();
-        assert!(parser.next(&mut &[][..]).is_none());
-        assert!(parser.next(&mut &[][..]).is_none());
+        assert!(
+            parser
+                .next(&mut &[][..])
+                .expect("valid parser state")
+                .is_none()
+        );
+        assert!(
+            parser
+                .next(&mut &[][..])
+                .expect("valid parser state")
+                .is_none()
+        );
     }
 
     #[test]
@@ -620,8 +989,20 @@ mod tests {
         const PARSER: MspParser<9> = MspParser::new();
         let mut parser = PARSER;
         let bytes = frame(&[]);
-        assert!(parser.next(&mut &bytes[..8]).is_none());
-        assert_eq!(parser.next(&mut &bytes[8..]).unwrap().as_bytes(), bytes);
+        assert!(
+            parser
+                .next(&mut &bytes[..8])
+                .expect("valid parser state")
+                .is_none()
+        );
+        assert_eq!(
+            parser
+                .next(&mut &bytes[8..])
+                .expect("valid parser state")
+                .unwrap()
+                .as_bytes(),
+            bytes
+        );
     }
 
     #[test]
@@ -649,11 +1030,189 @@ mod tests {
     }
 
     #[test]
+    fn decoded_fields_and_payload_borrows_match_across_all_splits() {
+        for (direction_byte, direction) in [
+            (b'<', MspDirection::Request),
+            (b'>', MspDirection::Response),
+            (b'!', MspDirection::Error),
+        ] {
+            for payload in [b"".as_slice(), b"hello$X!"] {
+                let mut bytes = frame(payload);
+                bytes[2] = direction_byte;
+                bytes[3] = 0xa5;
+                bytes[4..6].copy_from_slice(&0xbeef_u16.to_le_bytes());
+                let checksum = crc8_dvbs2_slice(0, &bytes[PREAMBLE_LEN..bytes.len() - CRC_LEN]);
+                *bytes.last_mut().unwrap() = checksum;
+
+                let standalone = MspFrame::try_from(bytes.as_slice()).unwrap();
+                assert_eq!(standalone.direction(), direction);
+                assert_eq!(standalone.flags(), 0xa5);
+                assert_eq!(standalone.cmd(), 0xbeef);
+                assert_eq!(standalone.payload(), payload);
+                assert_eq!(standalone.checksum(), checksum);
+                assert_eq!(standalone.as_bytes().as_ptr(), bytes.as_ptr());
+                assert_eq!(standalone.payload().as_ptr(), bytes[HEADER_LEN..].as_ptr());
+
+                for split in 0..=bytes.len() {
+                    let mut parser = MspParser::<32>::new();
+                    let spill_payload_ptr = parser.buffer[HEADER_LEN..].as_ptr();
+                    let mut first = &bytes[..split];
+                    let parsed = if split == bytes.len() {
+                        parser.next(&mut first).unwrap().unwrap()
+                    } else {
+                        assert_eq!(parser.next(&mut first), Ok(None));
+                        let mut rest = &bytes[split..];
+                        let parsed = parser.next(&mut rest).unwrap().unwrap();
+                        assert_eq!(rest, []);
+                        parsed
+                    };
+                    assert_eq!(parsed, standalone);
+                    assert_eq!(parsed.packet(), standalone.packet());
+                    assert_eq!(parsed.as_ref(), bytes);
+                    assert_eq!(&*parsed, bytes);
+                    assert_eq!(
+                        parsed.payload().as_ptr(),
+                        if split == 0 || split == bytes.len() {
+                            standalone.payload().as_ptr()
+                        } else {
+                            spill_payload_ptr
+                        }
+                    );
+                    assert_eq!(first, []);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn frame_from_slice_invalid_inputs() {
         assert!(MspFrame::from_slice(b"").is_none());
         assert!(MspFrame::from_slice(b"$X").is_none());
         let mut corrupt = frame(b"test");
         *corrupt.last_mut().unwrap() ^= 1;
         assert!(MspFrame::from_slice(&corrupt).is_none());
+    }
+
+    #[test]
+    fn standalone_validation_reports_header_errors() {
+        for bytes in [b"".as_slice(), b"$", b"$X", b"$X>", b"$X>\0\0\0\0"] {
+            assert_eq!(
+                MspFrame::try_from(bytes),
+                Err(MspFrameError::Incomplete {
+                    required: HEADER_LEN,
+                    actual: bytes.len(),
+                })
+            );
+        }
+        for bytes in [b"noise".as_slice(), b"$M>"] {
+            assert_eq!(
+                MspFrame::try_from(bytes),
+                Err(MspFrameError::InvalidPreamble)
+            );
+        }
+        assert_eq!(
+            MspFrame::try_from(b"$X?".as_slice()),
+            Err(MspFrameError::InvalidDirection)
+        );
+    }
+
+    #[test]
+    fn standalone_validation_reports_payload_and_checksum_errors() {
+        let bytes = frame(b"hello");
+        for length in HEADER_LEN..bytes.len() {
+            assert_eq!(
+                MspFrame::try_from(&bytes[..length]),
+                Err(MspFrameError::Incomplete {
+                    required: bytes.len(),
+                    actual: length,
+                })
+            );
+        }
+
+        let expected = *bytes.last().unwrap();
+        let mut corrupt = bytes.clone();
+        *corrupt.last_mut().unwrap() ^= 1;
+        assert_eq!(
+            MspFrame::try_from(corrupt.as_slice()),
+            Err(MspFrameError::ChecksumMismatch {
+                expected,
+                actual: expected ^ 1,
+            })
+        );
+        assert!(MspFrame::from_slice(&corrupt).is_none());
+
+        let mut trailing = bytes.clone();
+        trailing.push(0);
+        assert_eq!(
+            MspFrame::try_from(trailing.as_slice()),
+            Err(MspFrameError::LengthMismatch {
+                expected: bytes.len(),
+                actual: trailing.len(),
+            })
+        );
+        let validated = MspFrame::try_from(bytes.as_slice()).unwrap();
+        assert_eq!(validated.as_bytes().as_ptr(), bytes.as_ptr());
+        assert_eq!(MspFrame::from_slice(&bytes), Some(validated));
+    }
+
+    #[test]
+    fn invalid_buffer_positions_are_reported_and_reset_recovers() {
+        let bytes = frame(&[]);
+        for (start, end) in [(1, 0), (0, 10), (10, 10), (usize::MAX, usize::MAX)] {
+            let mut parser = MspParser::<9>::new();
+            parser.start = start;
+            parser.end = end;
+            let mut input = bytes.as_slice();
+            assert_eq!(
+                parser.next(&mut input),
+                Err(MspParserError::InvalidBufferState)
+            );
+            assert_eq!(input, bytes);
+            parser.reset();
+            assert_eq!(parser.next(&mut input).unwrap().unwrap().as_bytes(), bytes);
+            assert_eq!(parser.next(&mut input), Ok(None));
+        }
+    }
+
+    #[test]
+    fn failed_buffer_append_does_not_consume_input_or_change_state() {
+        let mut parser = MspParser::<9>::new();
+        parser.end = 8;
+        let before = parser.buffer;
+        let mut input = b"ab".as_slice();
+        assert_eq!(
+            parser.pull_from_input(&mut input, 2),
+            Err(MspParserError::BufferCapacityExceeded)
+        );
+        assert_eq!(input, b"ab");
+        assert_eq!((parser.start, parser.end), (0, 8));
+        assert_eq!(parser.buffer, before);
+        let candidate = inspect(&frame(&[]));
+        assert!(matches!(candidate, Candidate::Complete(_)));
+        if let Candidate::Complete(frame) = candidate {
+            assert_eq!(
+                parser.consume_buffered_frame(frame),
+                Err(MspParserError::InvalidBufferState)
+            );
+        }
+        assert_eq!((parser.start, parser.end), (0, 8));
+    }
+
+    #[test]
+    fn public_errors_implement_error_and_display() {
+        fn error_message(error: &dyn core::error::Error) -> std::string::String {
+            std::format!("{error}")
+        }
+        assert_eq!(
+            error_message(&MspFrameError::Incomplete {
+                required: 9,
+                actual: 8
+            }),
+            "incomplete MSP frame: need 9 bytes, got 8"
+        );
+        assert_eq!(
+            error_message(&MspParserError::InvalidBufferState),
+            "invalid MSP parser buffer state"
+        );
     }
 }
