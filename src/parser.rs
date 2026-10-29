@@ -1,10 +1,4 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MspVersion {
-    V1,
-    V2,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MspDirection {
     Request,  // '<'
     Response, // '>'
@@ -21,15 +15,6 @@ impl MspDirection {
             _ => None,
         }
     }
-}
-
-/// Zero-copy packet directly borrowing the payload slice from input memory.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MspPacket<'a> {
-    pub version: MspVersion,
-    pub direction: MspDirection,
-    pub cmd: u16,
-    pub payload: &'a [u8],
 }
 
 /// DVB-S2 CRC-8 polynomial: `x^8 + x^7 + x^6 + x^4 + x^2 + 1`.
@@ -215,17 +200,6 @@ impl<'a> MspFrame<'a> {
     pub fn checksum(&self) -> u8 {
         self.checksum
     }
-
-    /// Decodes the frame into a zero-copy [`MspPacket`].
-    #[must_use]
-    pub fn packet(&self) -> MspPacket<'a> {
-        MspPacket {
-            version: MspVersion::V2,
-            direction: self.direction(),
-            cmd: self.cmd(),
-            payload: self.payload(),
-        }
-    }
 }
 
 impl core::ops::Deref for MspFrame<'_> {
@@ -239,12 +213,6 @@ impl core::ops::Deref for MspFrame<'_> {
 impl AsRef<[u8]> for MspFrame<'_> {
     fn as_ref(&self) -> &[u8] {
         self.bytes
-    }
-}
-
-impl<'a> From<MspFrame<'a>> for MspPacket<'a> {
-    fn from(frame: MspFrame<'a>) -> Self {
-        frame.packet()
     }
 }
 
@@ -1006,7 +974,7 @@ mod tests {
     }
 
     #[test]
-    fn frame_field_accessors_and_packet_conversion() {
+    fn frame_field_accessors() {
         let payload = b"status_ok";
         let bytes = frame(payload);
         let frame = MspFrame::from_slice(&bytes).expect("valid frame");
@@ -1018,15 +986,6 @@ mod tests {
         assert_eq!(frame.cmd(), 42);
         assert_eq!(frame.payload(), payload);
         assert_eq!(frame.checksum(), *bytes.last().unwrap());
-
-        let packet = frame.packet();
-        assert_eq!(packet.version, MspVersion::V2);
-        assert_eq!(packet.direction, MspDirection::Response);
-        assert_eq!(packet.cmd, 42);
-        assert_eq!(packet.payload, payload);
-
-        let packet_from: MspPacket = frame.into();
-        assert_eq!(packet_from, packet);
     }
 
     #[test]
@@ -1067,7 +1026,6 @@ mod tests {
                         parsed
                     };
                     assert_eq!(parsed, standalone);
-                    assert_eq!(parsed.packet(), standalone.packet());
                     assert_eq!(parsed.as_ref(), bytes);
                     assert_eq!(&*parsed, bytes);
                     assert_eq!(

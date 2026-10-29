@@ -75,18 +75,17 @@ fn main() -> ExitCode {
                             return ExitCode::FAILURE;
                         }
                     };
-                    let packet = frame.packet();
                     println!(
                         "{:?} cmd={} flags=0x{:02x} len={} payload={:02X?}",
-                        packet.direction,
-                        packet.cmd,
+                        frame.direction(),
+                        frame.cmd(),
                         frame.flags(),
-                        packet.payload.len(),
-                        packet.payload
+                        frame.payload().len(),
+                        frame.payload()
                     );
 
-                    if packet.cmd == MSP_FC_VARIANT
-                        && let Ok(variant) = core::str::from_utf8(packet.payload)
+                    if frame.cmd() == MSP_FC_VARIANT
+                        && let Ok(variant) = core::str::from_utf8(frame.payload())
                     {
                         println!("  -> Flight controller variant: {variant}");
                     }
