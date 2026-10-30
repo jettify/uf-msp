@@ -3,7 +3,13 @@
 
 mod parser;
 
-pub use parser::{
-    CRC_LEN, HEADER_LEN, MIN_FRAME_LEN, MspDirection, MspFrame, MspFrameError, MspParser,
-    MspParserError, PREAMBLE_LEN, crc8_dvbs2_slice,
-};
+pub use parser::CRC_LEN;
+pub use parser::HEADER_LEN;
+pub use parser::MIN_FRAME_LEN;
+pub use parser::MspDirection;
+pub use parser::MspFrame;
+pub use parser::MspFrameError;
+pub use parser::MspParser;
+pub use parser::MspParserError;
+pub use parser::PREAMBLE_LEN;
+pub use parser::crc8_dvbs2_slice;

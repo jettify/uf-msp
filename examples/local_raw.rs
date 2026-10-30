@@ -5,10 +5,17 @@
     reason = "CLI example prints to stdout/stderr and slices read buffer"
 )]
 
-use std::io::{ErrorKind, Read, Write};
+use std::io::ErrorKind;
+use std::io::Read;
+use std::io::Write;
 use std::process::ExitCode;
-use std::time::{Duration, Instant};
-use uf_msp::{CRC_LEN, HEADER_LEN, MspParser, PREAMBLE_LEN, crc8_dvbs2_slice};
+use std::time::Duration;
+use std::time::Instant;
+use uf_msp::CRC_LEN;
+use uf_msp::HEADER_LEN;
+use uf_msp::MspParser;
+use uf_msp::PREAMBLE_LEN;
+use uf_msp::crc8_dvbs2_slice;
 
 pub const MSP_FC_VARIANT: u16 = 2;
 pub const MSP_STATUS: u16 = 101;
