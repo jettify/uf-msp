@@ -7,7 +7,7 @@ pub enum MspDirection {
 
 impl MspDirection {
     #[must_use]
-    pub fn from_byte(b: u8) -> Option<Self> {
+    fn from_byte(b: u8) -> Option<Self> {
         match b {
             b'<' => Some(Self::Request),
             b'>' => Some(Self::Response),
@@ -18,7 +18,7 @@ impl MspDirection {
 }
 
 /// DVB-S2 CRC-8 polynomial: `x^8 + x^7 + x^6 + x^4 + x^2 + 1`.
-pub const CRC8_DVBS2_POLY: u8 = 0xD5;
+const CRC8_DVBS2_POLY: u8 = 0xD5;
 
 /// MSP v2 header length: `$` (1), `X` (1), direction (1), flag (1), command ID (2), payload length (2).
 pub const HEADER_LEN: usize = 8;
@@ -29,25 +29,13 @@ pub const CRC_LEN: usize = 1;
 /// Length of the 3-byte preamble: `$` (1), `X` (1), direction (1).
 pub const PREAMBLE_LEN: usize = 3;
 
-/// Byte offset of the direction indicator (`<`, `>`, `!`).
-pub const DIRECTION_OFFSET: usize = 2;
-
-/// Byte offset of the 8-bit flags field.
-pub const FLAGS_OFFSET: usize = 3;
-
-/// Byte offset of the 16-bit little-endian command ID.
-pub const COMMAND_ID_OFFSET: usize = 4;
-
-/// Byte offset in the header where the 16-bit little-endian payload length is located.
-pub const PAYLOAD_LEN_OFFSET: usize = 6;
-
 /// Minimum valid MSP v2 frame size (empty payload: 8-byte header + 1-byte CRC).
 pub const MIN_FRAME_LEN: usize = HEADER_LEN + CRC_LEN;
 
 /// Updates a running CRC-8 (DVB-S2) with a single byte.
 #[inline]
 #[must_use]
-pub fn crc8_dvbs2_byte(mut crc: u8, byte: u8) -> u8 {
+fn crc8_dvbs2_byte(mut crc: u8, byte: u8) -> u8 {
     crc ^= byte;
     for _ in 0..8 {
         if (crc & 0x80) != 0 {
