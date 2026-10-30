@@ -13,11 +13,11 @@ use uf_msp::{CRC_LEN, HEADER_LEN, MspParser, PREAMBLE_LEN, crc8_dvbs2_slice};
 pub const MSP_FC_VARIANT: u16 = 2;
 pub const MSP_STATUS: u16 = 101;
 
-fn make_msp_v2_request(cmd: u16, payload: &[u8]) -> Vec<u8> {
+fn make_msp_v2_request(command_id: u16, payload: &[u8]) -> Vec<u8> {
     let mut frame = Vec::with_capacity(HEADER_LEN + payload.len() + CRC_LEN);
     frame.extend_from_slice(b"$X<");
     frame.push(0); // flags
-    frame.extend_from_slice(&cmd.to_le_bytes());
+    frame.extend_from_slice(&command_id.to_le_bytes());
     let len = u16::try_from(payload.len()).unwrap_or(0);
     frame.extend_from_slice(&len.to_le_bytes());
     frame.extend_from_slice(payload);
@@ -76,15 +76,15 @@ fn main() -> ExitCode {
                         }
                     };
                     println!(
-                        "{:?} cmd={} flags=0x{:02x} len={} payload={:02X?}",
+                        "{:?} command_id={} flags=0x{:02x} len={} payload={:02X?}",
                         frame.direction(),
-                        frame.cmd(),
+                        frame.command_id(),
                         frame.flags(),
                         frame.payload().len(),
                         frame.payload()
                     );
 
-                    if frame.cmd() == MSP_FC_VARIANT
+                    if frame.command_id() == MSP_FC_VARIANT
                         && let Ok(variant) = core::str::from_utf8(frame.payload())
                     {
                         println!("  -> Flight controller variant: {variant}");

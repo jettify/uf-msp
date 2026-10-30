@@ -20,7 +20,7 @@ impl MspDirection {
 /// DVB-S2 CRC-8 polynomial: `x^8 + x^7 + x^6 + x^4 + x^2 + 1`.
 pub const CRC8_DVBS2_POLY: u8 = 0xD5;
 
-/// MSP v2 header length: `$` (1), `X` (1), direction (1), flag (1), cmd (2), payload length (2).
+/// MSP v2 header length: `$` (1), `X` (1), direction (1), flag (1), command ID (2), payload length (2).
 pub const HEADER_LEN: usize = 8;
 
 /// Length of the CRC checksum field at the end of an MSP v2 frame.
@@ -36,7 +36,7 @@ pub const DIRECTION_OFFSET: usize = 2;
 pub const FLAGS_OFFSET: usize = 3;
 
 /// Byte offset of the 16-bit little-endian command ID.
-pub const CMD_OFFSET: usize = 4;
+pub const COMMAND_ID_OFFSET: usize = 4;
 
 /// Byte offset in the header where the 16-bit little-endian payload length is located.
 pub const PAYLOAD_LEN_OFFSET: usize = 6;
@@ -151,7 +151,7 @@ pub struct MspFrame<'a> {
     bytes: &'a [u8],
     direction: MspDirection,
     flags: u8,
-    cmd: u16,
+    command_id: u16,
     payload: &'a [u8],
     checksum: u8,
 }
@@ -185,8 +185,8 @@ impl<'a> MspFrame<'a> {
 
     /// Returns the 16-bit command ID.
     #[must_use]
-    pub fn cmd(&self) -> u16 {
-        self.cmd
+    pub fn command_id(&self) -> u16 {
+        self.command_id
     }
 
     /// Returns the payload slice borrowing directly from the frame.
@@ -220,31 +220,31 @@ impl<'a> TryFrom<&'a [u8]> for MspFrame<'a> {
     type Error = MspFrameError;
 
     fn try_from(bytes: &'a [u8]) -> Result<Self, Self::Error> {
-        match inspect(bytes) {
-            Candidate::Invalid(error) => Err(error),
-            Candidate::Incomplete(required) => Err(MspFrameError::Incomplete {
+        match inspect_frame(bytes) {
+            FrameInspection::Invalid(error) => Err(error),
+            FrameInspection::Incomplete(required) => Err(MspFrameError::Incomplete {
                 required,
                 actual: bytes.len(),
             }),
-            Candidate::Complete(frame) => frame.borrow(bytes),
+            FrameInspection::Complete(frame) => frame.into_frame(bytes),
         }
     }
 }
 
-/// Owned validation result, so inspection does not borrow across buffer mutation.
-/// Only `inspect` constructs this after checking the complete frame and CRC.
-struct ValidatedFrame {
+/// Owned frame metadata, so inspection does not borrow across buffer mutation.
+/// Only `inspect_frame` constructs this after checking the complete frame and CRC.
+struct ValidatedFrameMetadata {
     len: usize,
     direction: MspDirection,
     flags: u8,
-    cmd: u16,
+    command_id: u16,
     checksum: u8,
 }
 
-impl ValidatedFrame {
+impl ValidatedFrameMetadata {
     /// Attaches the validated fields to the exact bytes that were inspected.
     /// Callers must preserve those bytes between inspection and borrowing.
-    fn borrow(self, bytes: &[u8]) -> Result<MspFrame<'_>, MspFrameError> {
+    fn into_frame(self, bytes: &[u8]) -> Result<MspFrame<'_>, MspFrameError> {
         if bytes.len() != self.len {
             return Err(MspFrameError::LengthMismatch {
                 expected: self.len,
@@ -263,20 +263,20 @@ impl ValidatedFrame {
             bytes,
             direction: self.direction,
             flags: self.flags,
-            cmd: self.cmd,
+            command_id: self.command_id,
             payload,
             checksum: self.checksum,
         })
     }
 }
 
-enum Candidate {
+enum FrameInspection {
     Invalid(MspFrameError),
     Incomplete(usize),
-    Complete(ValidatedFrame),
+    Complete(ValidatedFrameMetadata),
 }
 
-fn inspect(bytes: &[u8]) -> Candidate {
+fn inspect_frame(bytes: &[u8]) -> FrameInspection {
     match bytes {
         // Preamble partial prefixes: valid start, but need full header to inspect frame length.
         []
@@ -286,59 +286,68 @@ fn inspect(bytes: &[u8]) -> Candidate {
         | [b'$', b'X', b'<' | b'>' | b'!', _]
         | [b'$', b'X', b'<' | b'>' | b'!', _, _]
         | [b'$', b'X', b'<' | b'>' | b'!', _, _, _]
-        | [b'$', b'X', b'<' | b'>' | b'!', _, _, _, _] => Candidate::Incomplete(HEADER_LEN),
+        | [b'$', b'X', b'<' | b'>' | b'!', _, _, _, _] => FrameInspection::Incomplete(HEADER_LEN),
         // Valid header: inspect payload length and checksum.
         [b'$', b'X', b'<' | b'>' | b'!', _, _, _, _, _, ..] => {
             let Some(header) = bytes
                 .get(..HEADER_LEN)
                 .and_then(|header| <&[u8; HEADER_LEN]>::try_from(header).ok())
             else {
-                return Candidate::Incomplete(HEADER_LEN);
+                return FrameInspection::Incomplete(HEADER_LEN);
             };
-            let &[_, _, direction, flags, cmd_lo, cmd_hi, len_lo, len_hi] = header;
+            let &[
+                _,
+                _,
+                direction,
+                flags,
+                command_id_lo,
+                command_id_hi,
+                len_lo,
+                len_hi,
+            ] = header;
             let Some(direction) = MspDirection::from_byte(direction) else {
-                return Candidate::Invalid(MspFrameError::InvalidDirection);
+                return FrameInspection::Invalid(MspFrameError::InvalidDirection);
             };
-            let cmd = u16::from_le_bytes([cmd_lo, cmd_hi]);
+            let command_id = u16::from_le_bytes([command_id_lo, command_id_hi]);
             // Add MIN_FRAME_LEN as u32 so even a 16-bit target cannot overflow before checking usize.
             let payload_len = u32::from(u16::from_le_bytes([len_lo, len_hi]));
             let min_frame_len = u32::try_from(MIN_FRAME_LEN).unwrap_or(9);
             let Ok(frame_len) = usize::try_from(payload_len + min_frame_len) else {
-                return Candidate::Invalid(MspFrameError::LengthOverflow);
+                return FrameInspection::Invalid(MspFrameError::LengthOverflow);
             };
             if bytes.len() < frame_len {
-                return Candidate::Incomplete(frame_len);
+                return FrameInspection::Incomplete(frame_len);
             }
             let checksum_idx = frame_len - CRC_LEN;
             let Some(crc_slice) = bytes.get(PREAMBLE_LEN..checksum_idx) else {
-                return Candidate::Invalid(MspFrameError::LengthMismatch {
+                return FrameInspection::Invalid(MspFrameError::LengthMismatch {
                     expected: frame_len,
                     actual: bytes.len(),
                 });
             };
-            let Some(&expected_crc) = bytes.get(checksum_idx) else {
-                return Candidate::Invalid(MspFrameError::LengthMismatch {
+            let Some(&received_crc) = bytes.get(checksum_idx) else {
+                return FrameInspection::Invalid(MspFrameError::LengthMismatch {
                     expected: frame_len,
                     actual: bytes.len(),
                 });
             };
             let calculated_crc = crc8_dvbs2_slice(0, crc_slice);
-            if calculated_crc != expected_crc {
-                return Candidate::Invalid(MspFrameError::ChecksumMismatch {
+            if calculated_crc != received_crc {
+                return FrameInspection::Invalid(MspFrameError::ChecksumMismatch {
                     expected: calculated_crc,
-                    actual: expected_crc,
+                    actual: received_crc,
                 });
             }
-            Candidate::Complete(ValidatedFrame {
+            FrameInspection::Complete(ValidatedFrameMetadata {
                 len: frame_len,
                 direction,
                 flags,
-                cmd,
-                checksum: expected_crc,
+                command_id,
+                checksum: received_crc,
             })
         }
-        [b'$', b'X', _, ..] => Candidate::Invalid(MspFrameError::InvalidDirection),
-        _ => Candidate::Invalid(MspFrameError::InvalidPreamble),
+        [b'$', b'X', _, ..] => FrameInspection::Invalid(MspFrameError::InvalidDirection),
+        _ => FrameInspection::Invalid(MspFrameError::InvalidPreamble),
     }
 }
 
@@ -420,7 +429,7 @@ impl<const N: usize> MspParser<N> {
     #[inline]
     fn consume_buffered_frame(
         &mut self,
-        frame: ValidatedFrame,
+        frame: ValidatedFrameMetadata,
     ) -> Result<MspFrame<'_>, MspParserError> {
         let end = self
             .start
@@ -434,7 +443,7 @@ impl<const N: usize> MspParser<N> {
             .get(self.start..end)
             .ok_or(MspParserError::InvalidBufferState)?;
         let frame = frame
-            .borrow(bytes)
+            .into_frame(bytes)
             .map_err(|_invalid_frame| MspParserError::InvalidBufferState)?;
         self.start = end;
         Ok(frame)
@@ -486,14 +495,14 @@ impl<const N: usize> MspParser<N> {
         loop {
             // Process any data currently in the spill buffer.
             if self.has_buffered() {
-                match inspect(self.buffered()?) {
-                    Candidate::Invalid(_) => self.skip_buffered_byte(),
-                    Candidate::Complete(frame) => {
+                match inspect_frame(self.buffered()?) {
+                    FrameInspection::Invalid(_) => self.skip_buffered_byte(),
+                    FrameInspection::Complete(frame) => {
                         return self.consume_buffered_frame(frame).map(Some);
                     }
-                    Candidate::Incomplete(required) => {
+                    FrameInspection::Incomplete(required) => {
                         if required > N {
-                            // Candidate exceeds spill capacity; discard byte to resync.
+                            // Candidate frame exceeds spill capacity; discard byte to resync.
                             self.skip_buffered_byte();
                             continue;
                         }
@@ -513,9 +522,9 @@ impl<const N: usize> MspParser<N> {
                 return Ok(None);
             }
 
-            match inspect(input) {
-                Candidate::Invalid(_) => *input = input.get(1..).unwrap_or(&[]),
-                Candidate::Complete(frame) => {
+            match inspect_frame(input) {
+                FrameInspection::Invalid(_) => *input = input.get(1..).unwrap_or(&[]),
+                FrameInspection::Complete(frame) => {
                     let bytes = input
                         .get(..frame.len)
                         .ok_or(MspParserError::InvalidBufferState)?;
@@ -523,14 +532,14 @@ impl<const N: usize> MspParser<N> {
                         .get(frame.len..)
                         .ok_or(MspParserError::InvalidBufferState)?;
                     let frame = frame
-                        .borrow(bytes)
+                        .into_frame(bytes)
                         .map_err(|_invalid_frame| MspParserError::InvalidBufferState)?;
                     *input = remaining;
                     return Ok(Some(frame));
                 }
-                Candidate::Incomplete(required) => {
+                FrameInspection::Incomplete(required) => {
                     if required > N {
-                        // Candidate exceeds spill capacity; discard byte to resync.
+                        // Candidate frame exceeds spill capacity; discard byte to resync.
                         *input = input.get(1..).unwrap_or(&[]);
                         continue;
                     }
@@ -983,7 +992,7 @@ mod tests {
         assert_eq!(&frame[..], bytes.as_slice()); // Deref test
         assert_eq!(frame.direction(), MspDirection::Response);
         assert_eq!(frame.flags(), 0);
-        assert_eq!(frame.cmd(), 42);
+        assert_eq!(frame.command_id(), 42);
         assert_eq!(frame.payload(), payload);
         assert_eq!(frame.checksum(), *bytes.last().unwrap());
     }
@@ -1006,7 +1015,7 @@ mod tests {
                 let standalone = MspFrame::try_from(bytes.as_slice()).unwrap();
                 assert_eq!(standalone.direction(), direction);
                 assert_eq!(standalone.flags(), 0xa5);
-                assert_eq!(standalone.cmd(), 0xbeef);
+                assert_eq!(standalone.command_id(), 0xbeef);
                 assert_eq!(standalone.payload(), payload);
                 assert_eq!(standalone.checksum(), checksum);
                 assert_eq!(standalone.as_bytes().as_ptr(), bytes.as_ptr());
@@ -1145,9 +1154,9 @@ mod tests {
         assert_eq!(input, b"ab");
         assert_eq!((parser.start, parser.end), (0, 8));
         assert_eq!(parser.buffer, before);
-        let candidate = inspect(&frame(&[]));
-        assert!(matches!(candidate, Candidate::Complete(_)));
-        if let Candidate::Complete(frame) = candidate {
+        let inspection = inspect_frame(&frame(&[]));
+        assert!(matches!(inspection, FrameInspection::Complete(_)));
+        if let FrameInspection::Complete(frame) = inspection {
             assert_eq!(
                 parser.consume_buffered_frame(frame),
                 Err(MspParserError::InvalidBufferState)
