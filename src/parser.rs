@@ -32,6 +32,8 @@ pub const PREAMBLE_LEN: usize = 3;
 /// Minimum valid MSP v2 frame size (empty payload: 8-byte header + 1-byte CRC).
 pub const MIN_FRAME_LEN: usize = HEADER_LEN + CRC_LEN;
 
+const MIN_FRAME_LEN_U32: u32 = MIN_FRAME_LEN as u32;
+
 /// Updates a running CRC-8 (DVB-S2) with a single byte.
 #[inline]
 #[must_use]
@@ -265,78 +267,63 @@ enum FrameInspection {
 }
 
 fn inspect_frame(bytes: &[u8]) -> FrameInspection {
-    match bytes {
-        // Preamble partial prefixes: valid start, but need full header to inspect frame length.
-        []
-        | [b'$']
-        | [b'$', b'X']
-        | [b'$', b'X', b'<' | b'>' | b'!']
-        | [b'$', b'X', b'<' | b'>' | b'!', _]
-        | [b'$', b'X', b'<' | b'>' | b'!', _, _]
-        | [b'$', b'X', b'<' | b'>' | b'!', _, _, _]
-        | [b'$', b'X', b'<' | b'>' | b'!', _, _, _, _] => FrameInspection::Incomplete(HEADER_LEN),
-        // Valid header: inspect payload length and checksum.
-        [b'$', b'X', b'<' | b'>' | b'!', _, _, _, _, _, ..] => {
-            let Some(header) = bytes
-                .get(..HEADER_LEN)
-                .and_then(|header| <&[u8; HEADER_LEN]>::try_from(header).ok())
-            else {
-                return FrameInspection::Incomplete(HEADER_LEN);
-            };
-            let &[
-                _,
-                _,
-                direction,
-                flags,
-                command_id_lo,
-                command_id_hi,
-                len_lo,
-                len_hi,
-            ] = header;
-            let Some(direction) = MspDirection::from_byte(direction) else {
-                return FrameInspection::Invalid(MspFrameError::InvalidDirection);
-            };
-            let command_id = u16::from_le_bytes([command_id_lo, command_id_hi]);
-            // Add MIN_FRAME_LEN as u32 so even a 16-bit target cannot overflow before checking usize.
-            let payload_len = u32::from(u16::from_le_bytes([len_lo, len_hi]));
-            let min_frame_len = u32::try_from(MIN_FRAME_LEN).unwrap_or(9);
-            let Ok(frame_len) = usize::try_from(payload_len + min_frame_len) else {
-                return FrameInspection::Invalid(MspFrameError::LengthOverflow);
-            };
-            if bytes.len() < frame_len {
-                return FrameInspection::Incomplete(frame_len);
-            }
-            let checksum_idx = frame_len - CRC_LEN;
-            let Some(crc_slice) = bytes.get(PREAMBLE_LEN..checksum_idx) else {
-                return FrameInspection::Invalid(MspFrameError::LengthMismatch {
-                    expected: frame_len,
-                    actual: bytes.len(),
-                });
-            };
-            let Some(&received_crc) = bytes.get(checksum_idx) else {
-                return FrameInspection::Invalid(MspFrameError::LengthMismatch {
-                    expected: frame_len,
-                    actual: bytes.len(),
-                });
-            };
-            let calculated_crc = crc8_dvbs2_slice(0, crc_slice);
-            if calculated_crc != received_crc {
-                return FrameInspection::Invalid(MspFrameError::ChecksumMismatch {
-                    expected: calculated_crc,
-                    actual: received_crc,
-                });
-            }
-            FrameInspection::Complete(ValidatedFrameMetadata {
-                len: frame_len,
-                direction,
-                flags,
-                command_id,
-                checksum: received_crc,
-            })
-        }
-        [b'$', b'X', _, ..] => FrameInspection::Invalid(MspFrameError::InvalidDirection),
-        _ => FrameInspection::Invalid(MspFrameError::InvalidPreamble),
+    // Reject incorrect preamble bytes as soon as they arrive, but retain valid prefixes.
+    if bytes
+        .iter()
+        .zip(b"$X")
+        .any(|(actual, expected)| actual != expected)
+    {
+        return FrameInspection::Invalid(MspFrameError::InvalidPreamble);
     }
+    let Some(&direction) = bytes.get(2) else {
+        return FrameInspection::Incomplete(HEADER_LEN);
+    };
+    let Some(direction) = MspDirection::from_byte(direction) else {
+        return FrameInspection::Invalid(MspFrameError::InvalidDirection);
+    };
+    let Some(header) = bytes
+        .get(..HEADER_LEN)
+        .and_then(|header| <&[u8; HEADER_LEN]>::try_from(header).ok())
+    else {
+        return FrameInspection::Incomplete(HEADER_LEN);
+    };
+    let &[_, _, _, flags, command_id_lo, command_id_hi, len_lo, len_hi] = header;
+    let command_id = u16::from_le_bytes([command_id_lo, command_id_hi]);
+    // Add MIN_FRAME_LEN as u32 so even a 16-bit target cannot overflow before checking usize.
+    let payload_len = u32::from(u16::from_le_bytes([len_lo, len_hi]));
+    let Ok(frame_len) = usize::try_from(payload_len + MIN_FRAME_LEN_U32) else {
+        return FrameInspection::Invalid(MspFrameError::LengthOverflow);
+    };
+    if bytes.len() < frame_len {
+        return FrameInspection::Incomplete(frame_len);
+    }
+    let checksum_idx = frame_len - CRC_LEN;
+    let Some(crc_slice) = bytes.get(PREAMBLE_LEN..checksum_idx) else {
+        return FrameInspection::Invalid(MspFrameError::LengthMismatch {
+            expected: frame_len,
+            actual: bytes.len(),
+        });
+    };
+    let Some(&received_crc) = bytes.get(checksum_idx) else {
+        return FrameInspection::Invalid(MspFrameError::LengthMismatch {
+            expected: frame_len,
+            actual: bytes.len(),
+        });
+    };
+    let calculated_crc = crc8_dvbs2_slice(0, crc_slice);
+    if calculated_crc != received_crc {
+        return FrameInspection::Invalid(MspFrameError::ChecksumMismatch {
+            expected: calculated_crc,
+            actual: received_crc,
+        });
+    }
+    FrameInspection::Complete(ValidatedFrameMetadata {
+        len: frame_len,
+        direction,
+        flags,
+        command_id,
+        checksum: received_crc,
+    })
 }
 
 /// Splits a byte stream into validated native MSP v2 frames without allocation.
@@ -1093,16 +1080,20 @@ mod tests {
 
     #[test]
     fn standalone_validation_reports_header_errors() {
-        for bytes in [b"".as_slice(), b"$", b"$X", b"$X>", b"$X>\0\0\0\0"] {
-            assert_eq!(
-                MspFrame::try_from(bytes),
-                Err(MspFrameError::Incomplete {
-                    required: HEADER_LEN,
-                    actual: bytes.len(),
-                })
-            );
+        for direction in *b"<>!" {
+            let mut bytes = frame(&[]);
+            bytes[2] = direction;
+            for length in 0..HEADER_LEN {
+                assert_eq!(
+                    MspFrame::try_from(&bytes[..length]),
+                    Err(MspFrameError::Incomplete {
+                        required: HEADER_LEN,
+                        actual: length,
+                    })
+                );
+            }
         }
-        for bytes in [b"noise".as_slice(), b"$M>"] {
+        for bytes in [b"n".as_slice(), b"noise", b"$M", b"$M>"] {
             assert_eq!(
                 MspFrame::try_from(bytes),
                 Err(MspFrameError::InvalidPreamble)
