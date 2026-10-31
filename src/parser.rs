@@ -344,7 +344,7 @@ fn inspect_frame(bytes: &[u8]) -> FrameInspection {
 /// Complete frames borrow the input directly. Frames spanning chunks use the
 /// internal `N`-byte spill buffer. `N` limits only split frames: larger contiguous
 /// frames are accepted, but larger incomplete candidates are skipped. Malformed
-/// candidates are skipped one byte at a time to search for the next valid frame.
+/// candidates are skipped by scanning for the next `$` to start validation again.
 pub struct MspParser<const N: usize> {
     buffer: [u8; N],
     start: usize,
@@ -397,10 +397,24 @@ impl<const N: usize> MspParser<N> {
         self.start < self.end
     }
 
-    /// Discards one byte from the spill buffer to scan for the next candidate frame.
+    /// Skips a rejected candidate and scans for the next possible preamble.
+    /// Starting after the first byte guarantees progress, while searching only
+    /// for `$` preserves partial preambles at chunk boundaries.
     #[inline]
-    fn skip_buffered_byte(&mut self) {
-        self.start += 1;
+    fn next_candidate(bytes: &[u8]) -> &[u8] {
+        let remaining = bytes.get(1..).unwrap_or(&[]);
+        let offset = remaining
+            .iter()
+            .position(|&byte| byte == b'$')
+            .unwrap_or(remaining.len());
+        remaining.get(offset..).unwrap_or(&[])
+    }
+
+    /// Advances the spill buffer to the next possible preamble.
+    #[inline]
+    fn skip_buffered_candidate(&mut self) -> Result<(), MspParserError> {
+        self.start = self.end - Self::next_candidate(self.buffered()?).len();
+        Ok(())
     }
 
     /// Compacts the spill buffer so remaining bytes begin at index 0.
@@ -484,14 +498,14 @@ impl<const N: usize> MspParser<N> {
             // Process any data currently in the spill buffer.
             if self.has_buffered() {
                 match inspect_frame(self.buffered()?) {
-                    FrameInspection::Invalid(_) => self.skip_buffered_byte(),
+                    FrameInspection::Invalid(_) => self.skip_buffered_candidate()?,
                     FrameInspection::Complete(frame) => {
                         return self.consume_buffered_frame(frame).map(Some);
                     }
                     FrameInspection::Incomplete(required) => {
                         if required > N {
-                            // Candidate frame exceeds spill capacity; discard byte to resync.
-                            self.skip_buffered_byte();
+                            // Candidate exceeds spill capacity; scan for the next preamble.
+                            self.skip_buffered_candidate()?;
                             continue;
                         }
                         self.compact();
@@ -511,7 +525,7 @@ impl<const N: usize> MspParser<N> {
             }
 
             match inspect_frame(input) {
-                FrameInspection::Invalid(_) => *input = input.get(1..).unwrap_or(&[]),
+                FrameInspection::Invalid(_) => *input = Self::next_candidate(input),
                 FrameInspection::Complete(frame) => {
                     let bytes = input
                         .get(..frame.len)
@@ -527,8 +541,8 @@ impl<const N: usize> MspParser<N> {
                 }
                 FrameInspection::Incomplete(required) => {
                     if required > N {
-                        // Candidate frame exceeds spill capacity; discard byte to resync.
-                        *input = input.get(1..).unwrap_or(&[]);
+                        // Candidate exceeds spill capacity; scan for the next preamble.
+                        *input = Self::next_candidate(input);
                         continue;
                     }
                     // Spill partial candidate into internal buffer to await rest of frame.
@@ -764,6 +778,35 @@ mod tests {
             bytes
         );
         assert_eq!(input, []);
+    }
+
+    #[test]
+    fn recovery_preserves_partial_headers_after_noise() {
+        let inner = frame(b"hello");
+        for prefix_len in 0..HEADER_LEN {
+            let mut payload = std::vec![b'n'; 64];
+            payload.extend_from_slice(b"$$X?$M>");
+            payload.extend_from_slice(&inner[..prefix_len]);
+            let mut outer = frame(&payload);
+            // Replace the outer CRC with the next byte of the embedded frame.
+            // Change a covered field if that byte happens to be the valid CRC.
+            if *outer.last().unwrap() == inner[prefix_len] {
+                outer[3] ^= 1;
+            }
+            *outer.last_mut().unwrap() = inner[prefix_len];
+            assert!(MspFrame::from_slice(&outer).is_none());
+
+            for split in [0, HEADER_LEN] {
+                let mut parser = MspParser::<128>::new();
+                assert_eq!(parser.next(&mut &outer[..split]), Ok(None));
+                let mut input = &outer[split..];
+                assert_eq!(parser.next(&mut input), Ok(None));
+                assert!(input.is_empty());
+                let mut tail = &inner[prefix_len + 1..];
+                assert_eq!(parser.next(&mut tail).unwrap().unwrap().as_bytes(), inner);
+                assert!(tail.is_empty());
+            }
+        }
     }
 
     #[test]
