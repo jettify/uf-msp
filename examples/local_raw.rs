@@ -11,27 +11,9 @@ use std::io::Write;
 use std::process::ExitCode;
 use std::time::Duration;
 use std::time::Instant;
-use uf_msp::CRC_LEN;
-use uf_msp::HEADER_LEN;
 use uf_msp::MspParser;
-use uf_msp::PREAMBLE_LEN;
-use uf_msp::crc8_dvbs2_slice;
 
-pub const MSP_FC_VARIANT: u16 = 2;
-pub const MSP_STATUS: u16 = 101;
-
-fn make_msp_v2_request(command_id: u16, payload: &[u8]) -> Vec<u8> {
-    let mut frame = Vec::with_capacity(HEADER_LEN + payload.len() + CRC_LEN);
-    frame.extend_from_slice(b"$X<");
-    frame.push(0); // flags
-    frame.extend_from_slice(&command_id.to_le_bytes());
-    let len = u16::try_from(payload.len()).unwrap_or(0);
-    frame.extend_from_slice(&len.to_le_bytes());
-    frame.extend_from_slice(payload);
-    let crc = crc8_dvbs2_slice(0, &frame[PREAMBLE_LEN..]);
-    frame.push(crc);
-    frame
-}
+const MSP_FC_VARIANT: u16 = 2;
 
 fn main() -> ExitCode {
     let default_port = "/dev/tty.usbmodem00000000001B1";
@@ -51,8 +33,9 @@ fn main() -> ExitCode {
     let mut buf = [0u8; 1024];
     let mut parser = MspParser::<1024>::new();
 
-    // Send an initial request for FC variant
-    let init_req = make_msp_v2_request(MSP_FC_VARIANT, &[]);
+    // Fixed MSP v2 requests (including CRC) until the library provides serialization.
+    // MSP_FC_VARIANT (2), flags = 0, empty payload.
+    let init_req = *b"$X<\x00\x02\x00\x00\x00\x8a";
     if let Err(e) = port.write_all(&init_req) {
         eprintln!("Failed to send initial request: {e}");
     }
@@ -63,7 +46,8 @@ fn main() -> ExitCode {
     println!("Reading from serial port '{port_name}'...");
     loop {
         if last_poll.elapsed() >= poll_interval {
-            let req = make_msp_v2_request(MSP_STATUS, &[]);
+            // MSP_STATUS (101), flags = 0, empty payload.
+            let req = *b"$X<\x00\x65\x00\x00\x00\xca";
             if let Err(e) = port.write_all(&req) {
                 eprintln!("Error sending request: {e}");
             }
