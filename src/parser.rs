@@ -1,3 +1,30 @@
+use crate::constants::CRC_LEN;
+use crate::constants::CRC8_DVBS2_POLY;
+use crate::constants::HEADER_LEN;
+use crate::constants::MIN_FRAME_LEN;
+use crate::constants::MIN_FRAME_LEN_U32;
+use crate::constants::PREAMBLE_LEN;
+use crate::constants::V1_CHECKSUM_LEN;
+use crate::constants::V1_ENCAPSULATED_CMD;
+use crate::constants::V1_HEADER_LEN;
+use crate::constants::V1_JUMBO_LENGTH_LEN;
+use crate::constants::V1_JUMBO_SIZE;
+use crate::constants::V1_MIN_FRAME_LEN;
+use crate::constants::V2_INNER_OVERHEAD;
+use crate::constants::V2_OVER_V1_HEADER_LEN;
+
+/// MSP framing version. Jumbo frames retain their underlying version.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum MspVersion {
+    /// MSP v1, ordinary or jumbo.
+    V1,
+    /// MSP v2 encapsulated in an ordinary or jumbo v1 frame.
+    V2OverV1,
+    /// Native MSP v2.
+    V2,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MspDirection {
     Request,  // '<'
@@ -16,23 +43,6 @@ impl MspDirection {
         }
     }
 }
-
-/// DVB-S2 CRC-8 polynomial: `x^8 + x^7 + x^6 + x^4 + x^2 + 1`.
-const CRC8_DVBS2_POLY: u8 = 0xD5;
-
-/// MSP v2 header length: `$` (1), `X` (1), direction (1), flag (1), command ID (2), payload length (2).
-pub const HEADER_LEN: usize = 8;
-
-/// Length of the CRC checksum field at the end of an MSP v2 frame.
-pub const CRC_LEN: usize = 1;
-
-/// Length of the 3-byte preamble: `$` (1), `X` (1), direction (1).
-pub const PREAMBLE_LEN: usize = 3;
-
-/// Minimum valid MSP v2 frame size (empty payload: 8-byte header + 1-byte CRC).
-pub const MIN_FRAME_LEN: usize = HEADER_LEN + CRC_LEN;
-
-const MIN_FRAME_LEN_U32: u32 = MIN_FRAME_LEN as u32;
 
 /// Updates a running CRC-8 (DVB-S2) with a single byte.
 #[inline]
@@ -57,16 +67,19 @@ pub fn crc8_dvbs2_slice(initial: u8, data: &[u8]) -> u8 {
         .fold(initial, |crc, &byte| crc8_dvbs2_byte(crc, byte))
 }
 
-/// Why a standalone byte slice could not be validated as an MSP v2 frame.
+/// Why a standalone byte slice could not be validated as an MSP frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum MspFrameError {
     /// More bytes are needed; `required` is the next validation threshold.
     Incomplete { required: usize, actual: usize },
-    /// The frame does not begin with `$X`.
+    /// The frame does not begin with `$M` or `$X`.
     InvalidPreamble,
     /// The direction byte is neither `<`, `>`, nor `!`.
     InvalidDirection,
+    /// The outer payload size differs from the inner header plus payload and CRC.
+    /// `expected` is the minimum overhead when the outer size cannot hold an inner header.
+    InvalidEncapsulationLength { expected: usize, actual: usize },
     /// The complete frame length cannot be represented on this target.
     LengthOverflow,
     /// A complete frame is followed by additional bytes.
@@ -84,8 +97,12 @@ impl core::fmt::Display for MspFrameError {
                     "incomplete MSP frame: need {required} bytes, got {actual}"
                 )
             }
-            Self::InvalidPreamble => f.write_str("invalid MSP v2 preamble"),
+            Self::InvalidPreamble => f.write_str("invalid MSP preamble"),
             Self::InvalidDirection => f.write_str("invalid MSP direction"),
+            Self::InvalidEncapsulationLength { expected, actual } => write!(
+                f,
+                "invalid MSP encapsulation length: expected {expected} bytes, got {actual}"
+            ),
             Self::LengthOverflow => f.write_str("MSP frame length exceeds target address space"),
             Self::LengthMismatch { expected, actual } => {
                 write!(
@@ -131,7 +148,7 @@ impl core::fmt::Display for MspParserError {
 
 impl core::error::Error for MspParserError {}
 
-/// A complete native MSP v2 frame with a valid header and checksum.
+/// A complete MSP frame with a valid header and checksum(s).
 ///
 /// The borrowed bytes include the header, payload, and checksum. Construction is
 /// private so this type always represents a validated frame. Header fields are
@@ -139,6 +156,7 @@ impl core::error::Error for MspParserError {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MspFrame<'a> {
     bytes: &'a [u8],
+    version: MspVersion,
     direction: MspDirection,
     flags: u8,
     command_id: u16,
@@ -147,7 +165,7 @@ pub struct MspFrame<'a> {
 }
 
 impl<'a> MspFrame<'a> {
-    /// Validates a standalone byte slice as a complete MSP v2 frame.
+    /// Validates a standalone byte slice as a complete MSP frame.
     ///
     /// Discards validation diagnostics. Use [`Self::try_from`] for detailed errors.
     #[must_use]
@@ -161,13 +179,19 @@ impl<'a> MspFrame<'a> {
         self.bytes
     }
 
+    /// Returns the framing version (jumbo frames retain their underlying version).
+    #[must_use]
+    pub fn version(&self) -> MspVersion {
+        self.version
+    }
+
     /// Returns the direction of this frame (request, response, or error).
     #[must_use]
     pub fn direction(&self) -> MspDirection {
         self.direction
     }
 
-    /// Returns the 8-bit flag field.
+    /// Returns the 8-bit flag field, or zero for v1.
     #[must_use]
     pub fn flags(&self) -> u8 {
         self.flags
@@ -185,7 +209,7 @@ impl<'a> MspFrame<'a> {
         self.payload
     }
 
-    /// Returns the CRC checksum byte at the end of the frame.
+    /// Returns the final wire checksum: outer XOR for v1 formats, CRC for native v2.
     #[must_use]
     pub fn checksum(&self) -> u8 {
         self.checksum
@@ -222,9 +246,11 @@ impl<'a> TryFrom<&'a [u8]> for MspFrame<'a> {
 }
 
 /// Owned frame metadata, so inspection does not borrow across buffer mutation.
-/// Only `inspect_frame` constructs this after checking the complete frame and CRC.
+/// Constructed by frame inspection after checking the complete frame and checksums.
 struct ValidatedFrameMetadata {
     len: usize,
+    payload_offset: usize,
+    version: MspVersion,
     direction: MspDirection,
     flags: u8,
     command_id: u16,
@@ -241,16 +267,20 @@ impl ValidatedFrameMetadata {
                 actual: bytes.len(),
             });
         }
+        let trailer_len = match self.version {
+            MspVersion::V1 => V1_CHECKSUM_LEN,
+            MspVersion::V2OverV1 => CRC_LEN + V1_CHECKSUM_LEN,
+            MspVersion::V2 => CRC_LEN,
+        };
         let payload = bytes
-            .get(HEADER_LEN..)
-            .and_then(|body| body.split_last())
-            .map(|(_, payload)| payload)
+            .get(self.payload_offset..self.len - trailer_len)
             .ok_or(MspFrameError::Incomplete {
-                required: MIN_FRAME_LEN,
+                required: self.payload_offset + trailer_len,
                 actual: bytes.len(),
             })?;
         Ok(MspFrame {
             bytes,
+            version: self.version,
             direction: self.direction,
             flags: self.flags,
             command_id: self.command_id,
@@ -267,6 +297,9 @@ enum FrameInspection {
 }
 
 fn inspect_frame(bytes: &[u8]) -> FrameInspection {
+    if let [b'$', b'M', ..] = bytes {
+        return inspect_v1_frame(bytes);
+    }
     // Reject incorrect preamble bytes as soon as they arrive, but retain valid prefixes.
     if bytes
         .iter()
@@ -274,6 +307,9 @@ fn inspect_frame(bytes: &[u8]) -> FrameInspection {
         .any(|(actual, expected)| actual != expected)
     {
         return FrameInspection::Invalid(MspFrameError::InvalidPreamble);
+    }
+    if bytes.len() < 2 {
+        return FrameInspection::Incomplete(2);
     }
     let Some(&direction) = bytes.get(2) else {
         return FrameInspection::Incomplete(HEADER_LEN);
@@ -319,6 +355,8 @@ fn inspect_frame(bytes: &[u8]) -> FrameInspection {
     }
     FrameInspection::Complete(ValidatedFrameMetadata {
         len: frame_len,
+        payload_offset: HEADER_LEN,
+        version: MspVersion::V2,
         direction,
         flags,
         command_id,
@@ -326,7 +364,114 @@ fn inspect_frame(bytes: &[u8]) -> FrameInspection {
     })
 }
 
-/// Splits a byte stream into validated native MSP v2 frames without allocation.
+fn inspect_v1_frame(bytes: &[u8]) -> FrameInspection {
+    let Some(&direction) = bytes.get(2) else {
+        return FrameInspection::Incomplete(V1_HEADER_LEN);
+    };
+    let Some(direction) = MspDirection::from_byte(direction) else {
+        return FrameInspection::Invalid(MspFrameError::InvalidDirection);
+    };
+    let Some(header) = bytes.get(..V1_HEADER_LEN) else {
+        return FrameInspection::Incomplete(V1_HEADER_LEN);
+    };
+    let [_, _, _, size, command] = *header else {
+        return FrameInspection::Incomplete(V1_HEADER_LEN);
+    };
+    let encapsulated = command == V1_ENCAPSULATED_CMD;
+    let jumbo = size == V1_JUMBO_SIZE;
+    if encapsulated && !jumbo && usize::from(size) < V2_INNER_OVERHEAD {
+        return FrameInspection::Invalid(MspFrameError::InvalidEncapsulationLength {
+            expected: V2_INNER_OVERHEAD,
+            actual: usize::from(size),
+        });
+    }
+    // Betaflight places the jumbo length AFTER the inner v2 header.
+    let base_offset = if encapsulated {
+        V2_OVER_V1_HEADER_LEN
+    } else {
+        V1_HEADER_LEN
+    };
+    let payload_offset = base_offset + if jumbo { V1_JUMBO_LENGTH_LEN } else { 0 };
+    let Some(header) = bytes.get(..payload_offset) else {
+        return FrameInspection::Incomplete(payload_offset);
+    };
+    let outer_size = if jumbo {
+        let Some(&[lo, hi]) = header.get(base_offset..) else {
+            return FrameInspection::Incomplete(payload_offset);
+        };
+        u16::from_le_bytes([lo, hi])
+    } else {
+        u16::from(size)
+    };
+    let (version, flags, command_id) = if encapsulated {
+        let Some(&[flags, lo, hi, len_lo, len_hi]) =
+            header.get(V1_HEADER_LEN..V2_OVER_V1_HEADER_LEN)
+        else {
+            return FrameInspection::Incomplete(V2_OVER_V1_HEADER_LEN);
+        };
+        let expected = u32::from(u16::from_le_bytes([len_lo, len_hi])) + V2_INNER_OVERHEAD as u32;
+        if expected != u32::from(outer_size) {
+            let Ok(expected) = usize::try_from(expected) else {
+                return FrameInspection::Invalid(MspFrameError::LengthOverflow);
+            };
+            return FrameInspection::Invalid(MspFrameError::InvalidEncapsulationLength {
+                expected,
+                actual: usize::from(outer_size),
+            });
+        }
+        (MspVersion::V2OverV1, flags, u16::from_le_bytes([lo, hi]))
+    } else {
+        (MspVersion::V1, 0, u16::from(command))
+    };
+    let Ok(frame_len) = usize::try_from(
+        u32::from(outer_size)
+            + V1_MIN_FRAME_LEN as u32
+            + if jumbo { V1_JUMBO_LENGTH_LEN as u32 } else { 0 },
+    ) else {
+        return FrameInspection::Invalid(MspFrameError::LengthOverflow);
+    };
+    if bytes.len() < frame_len {
+        return FrameInspection::Incomplete(frame_len);
+    }
+    let Some(frame_bytes) = bytes.get(..frame_len) else {
+        return FrameInspection::Incomplete(frame_len);
+    };
+    let checksum_idx = frame_len - V1_CHECKSUM_LEN;
+    let Some((&actual, body)) = frame_bytes.get(PREAMBLE_LEN..).and_then(|s| s.split_last()) else {
+        return FrameInspection::Incomplete(frame_len);
+    };
+    let expected = body.iter().fold(0, |sum, byte| sum ^ byte);
+    if expected != actual {
+        return FrameInspection::Invalid(MspFrameError::ChecksumMismatch { expected, actual });
+    }
+    if encapsulated {
+        let Some(inner_header) = frame_bytes.get(V1_HEADER_LEN..V2_OVER_V1_HEADER_LEN) else {
+            return FrameInspection::Incomplete(V2_OVER_V1_HEADER_LEN);
+        };
+        let Some(inner_body) = frame_bytes
+            .get(payload_offset..checksum_idx)
+            .and_then(|s| s.split_last())
+        else {
+            return FrameInspection::Incomplete(frame_len);
+        };
+        let (&actual, payload) = inner_body;
+        let expected = crc8_dvbs2_slice(crc8_dvbs2_slice(0, inner_header), payload);
+        if expected != actual {
+            return FrameInspection::Invalid(MspFrameError::ChecksumMismatch { expected, actual });
+        }
+    }
+    FrameInspection::Complete(ValidatedFrameMetadata {
+        len: frame_len,
+        payload_offset,
+        version,
+        direction,
+        flags,
+        command_id,
+        checksum: actual,
+    })
+}
+
+/// Splits a byte stream into validated MSP frames without allocation.
 ///
 /// Complete frames borrow the input directly. Frames spanning chunks use the
 /// internal `N`-byte spill buffer. `N` limits only split frames: larger contiguous
@@ -343,6 +488,9 @@ impl<const N: usize> MspParser<N> {
     ///
     /// `N` must be at least 9, the minimum native MSP v2 frame size.
     /// Smaller capacities fail at compile time, even for runtime construction.
+    /// Split v2-over-v1 frames need at least 12 bytes (14 for jumbo), plus payload;
+    /// smaller buffers skip those candidates. Complete contiguous frames are
+    /// accepted regardless of spill capacity.
     ///
     /// ```compile_fail,E0080
     /// use uf_msp::MspParser;
@@ -568,6 +716,286 @@ mod tests {
         bytes
     }
 
+    fn v1_frame(payload: &[u8], encapsulated: bool, jumbo: bool) -> Vec<u8> {
+        let outer_len = payload.len() + if encapsulated { 6 } else { 0 };
+        let mut bytes = std::vec![
+            b'$',
+            b'M',
+            b'>',
+            if jumbo {
+                255
+            } else {
+                u8::try_from(outer_len).unwrap()
+            },
+            if encapsulated { 255 } else { 42 }
+        ];
+        if encapsulated {
+            bytes.extend_from_slice(&[0xa5, 0xef, 0xbe]);
+            bytes.extend_from_slice(&u16::try_from(payload.len()).unwrap().to_le_bytes());
+        }
+        let crc = if encapsulated {
+            crc8_dvbs2_slice(0, &bytes[5..10])
+        } else {
+            0
+        };
+        if jumbo {
+            bytes.extend_from_slice(&u16::try_from(outer_len).unwrap().to_le_bytes());
+        }
+        bytes.extend_from_slice(payload);
+        if encapsulated {
+            bytes.push(crc8_dvbs2_slice(crc, payload));
+        }
+        bytes.push(bytes[3..].iter().fold(0, |sum, b| sum ^ b));
+        bytes
+    }
+
+    #[test]
+    fn fixed_v1_vectors() {
+        for (wire, version, payload) in [
+            (
+                b"$M<\x00\x01\x01".as_slice(),
+                MspVersion::V1,
+                b"".as_slice(),
+            ),
+            (b"$M>\xff\x2a\x01\x00\x41\x95", MspVersion::V1, b"A"),
+            (
+                b"$M>\x06\xff\x00\x01\x00\x00\x00\x45\xbd",
+                MspVersion::V2OverV1,
+                b"",
+            ),
+            (
+                b"$M>\xff\xff\x00\x01\x00\x00\x00\x06\x00\x45\x42",
+                MspVersion::V2OverV1,
+                b"",
+            ),
+        ] {
+            let result = MspFrame::try_from(wire).unwrap();
+            assert_eq!(result.version(), version);
+            assert_eq!(result.payload(), payload);
+            assert_eq!(result.checksum(), *wire.last().unwrap());
+        }
+    }
+
+    #[test]
+    fn v1_boundaries_and_borrowing() {
+        for encapsulated in [false, true] {
+            for len in [
+                0,
+                1,
+                248,
+                249,
+                254,
+                255,
+                256,
+                if encapsulated { 65529 } else { 65535 },
+            ] {
+                let payload = std::vec![0x73; len];
+                let jumbo = len + if encapsulated { 6 } else { 0 } >= 255;
+                let mut bytes = v1_frame(&payload, encapsulated, jumbo);
+                for direction in *b"<>!" {
+                    bytes[2] = direction;
+                    let f = MspFrame::try_from(bytes.as_slice()).unwrap();
+                    assert_eq!(
+                        f.version(),
+                        if encapsulated {
+                            MspVersion::V2OverV1
+                        } else {
+                            MspVersion::V1
+                        }
+                    );
+                    assert_eq!(f.command_id(), if encapsulated { 0xbeef } else { 42 });
+                    assert_eq!(f.flags(), if encapsulated { 0xa5 } else { 0 });
+                    assert_eq!(f.payload(), payload);
+                    assert_eq!(f.as_bytes().as_ptr(), bytes.as_ptr());
+                    let offset = if encapsulated { 10 } else { 5 } + if jumbo { 2 } else { 0 };
+                    assert_eq!(f.payload().as_ptr(), bytes[offset..].as_ptr());
+                }
+                // Maximum frames borrow contiguous input even with a small spill buffer.
+                assert_eq!(
+                    MspParser::<9>::new()
+                        .next(&mut bytes.as_slice())
+                        .unwrap()
+                        .unwrap()
+                        .as_bytes(),
+                    bytes
+                );
+                if bytes.len() > 300 {
+                    continue;
+                }
+                for split in 0..bytes.len() {
+                    let mut parser = MspParser::<300>::new();
+                    assert_eq!(parser.next(&mut &bytes[..split]), Ok(None));
+                    let f = parser.next(&mut &bytes[split..]).unwrap().unwrap();
+                    assert_eq!(f.as_bytes(), bytes);
+                    assert_eq!(f.payload(), payload);
+                }
+                let mut parser = MspParser::<300>::new();
+                for (i, byte) in bytes.iter().enumerate() {
+                    assert_eq!(
+                        parser
+                            .next(&mut core::slice::from_ref(byte))
+                            .unwrap()
+                            .is_some(),
+                        i + 1 == bytes.len()
+                    );
+                }
+                let mut trailing = bytes.clone();
+                trailing.push(0);
+                assert!(matches!(
+                    MspFrame::try_from(trailing.as_slice()),
+                    Err(MspFrameError::LengthMismatch { .. })
+                ));
+                for prefix in 0..bytes.len() {
+                    assert!(matches!(
+                        MspFrame::try_from(&bytes[..prefix]),
+                        Err(MspFrameError::Incomplete { .. })
+                    ));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn encapsulation_lengths_must_fit_outer_envelope() {
+        for (header, expected, actual) in [
+            (b"$M>\x00\xff\x00\x00\x00\x00\x00".as_slice(), 6, 0),
+            (b"$M>\xff\xff\x00\x00\x00\xff\xff\xff\xff", 65541, 65535),
+        ] {
+            assert_eq!(
+                MspFrame::try_from(header),
+                Err(MspFrameError::InvalidEncapsulationLength { expected, actual })
+            );
+        }
+    }
+
+    #[test]
+    fn undersized_encapsulation_rejects_at_outer_header() {
+        let probe = v1_frame(&[], false, false);
+        for size in 0..V2_INNER_OVERHEAD as u8 {
+            let header = [b'$', b'M', b'>', size, V1_ENCAPSULATED_CMD];
+            let expected = MspFrameError::InvalidEncapsulationLength {
+                expected: V2_INNER_OVERHEAD,
+                actual: usize::from(size),
+            };
+            assert_eq!(MspFrame::try_from(header.as_slice()), Err(expected));
+            // Keep the parser below the inner-header threshold, then supply a
+            // short v1 frame in isolation. No extra input should be necessary.
+            for split in 0..=header.len() {
+                let mut parser = MspParser::<32>::new();
+                assert_eq!(parser.next(&mut &header[..split]), Ok(None));
+                assert_eq!(parser.next(&mut &header[split..]), Ok(None));
+                assert!(parser.buffered().unwrap().is_empty());
+                assert_eq!(
+                    parser
+                        .next(&mut probe.as_slice())
+                        .unwrap()
+                        .unwrap()
+                        .as_bytes(),
+                    probe
+                );
+            }
+        }
+        assert_eq!(
+            MspFrame::try_from(b"$M>\x00\xff\xff".as_slice()),
+            Err(MspFrameError::InvalidEncapsulationLength {
+                expected: V2_INNER_OVERHEAD,
+                actual: 0
+            })
+        );
+    }
+
+    #[test]
+    fn encapsulation_errors_and_mixed_recovery() {
+        let mut stream = std::vec::Vec::new();
+        let mut expected = std::vec::Vec::new();
+        for encapsulated in [false, true] {
+            for jumbo in [false, true] {
+                let bytes = v1_frame(b"hello", encapsulated, jumbo);
+                let mut corrupt = bytes.clone();
+                *corrupt.last_mut().unwrap() ^= 1;
+                assert!(matches!(
+                    MspFrame::try_from(corrupt.as_slice()),
+                    Err(MspFrameError::ChecksumMismatch { .. })
+                ));
+                stream.extend_from_slice(&corrupt);
+                if encapsulated {
+                    // Corrupt only the inner checksum, repairing outer XOR.
+                    let n = corrupt.len();
+                    corrupt[n - 2] ^= 1;
+                    corrupt[n - 1] = corrupt[3..n - 1].iter().fold(0, |sum, b| sum ^ b);
+                    assert!(matches!(
+                        MspFrame::try_from(corrupt.as_slice()),
+                        Err(MspFrameError::ChecksumMismatch { .. })
+                    ));
+                    stream.extend_from_slice(&corrupt);
+                    corrupt[8] ^= 1;
+                    assert!(matches!(
+                        MspFrame::try_from(corrupt.as_slice()),
+                        Err(MspFrameError::InvalidEncapsulationLength { .. })
+                    ));
+                    stream.extend_from_slice(&corrupt);
+                }
+                stream.extend_from_slice(&bytes);
+                expected.push(bytes);
+            }
+        }
+        let native = frame(b"native");
+        stream.extend_from_slice(&native);
+        expected.push(native);
+        for chunk_size in [1, 7, stream.len()] {
+            let mut parser = MspParser::<128>::new();
+            let mut actual = std::vec::Vec::new();
+            for chunk in stream.chunks(chunk_size) {
+                let mut input = chunk;
+                while let Some(f) = parser.next(&mut input).unwrap() {
+                    actual.push(f.as_bytes().to_vec());
+                }
+            }
+            assert_eq!(actual, expected);
+        }
+        for command in [0, 254] {
+            let bytes = [b'$', b'M', b'!', 0, command, command];
+            assert_eq!(
+                MspFrame::try_from(bytes.as_slice()).unwrap().command_id(),
+                u16::from(command)
+            );
+        }
+        assert!(matches!(
+            MspFrame::try_from(b"$M?".as_slice()),
+            Err(MspFrameError::InvalidDirection)
+        ));
+        let bytes = v1_frame(b"hello", true, true);
+        let mut parser = MspParser::<14>::new();
+        assert_eq!(parser.next(&mut &bytes[..10]), Ok(None));
+        let probe = v1_frame(&[], false, false);
+        assert_eq!(
+            parser
+                .next(&mut probe.as_slice())
+                .unwrap()
+                .unwrap()
+                .as_bytes(),
+            probe
+        );
+        let mut parser = MspParser::<32>::new();
+        assert_eq!(parser.next(&mut &bytes[..10]), Ok(None));
+        parser.reset();
+        assert_eq!(
+            parser
+                .next(&mut probe.as_slice())
+                .unwrap()
+                .unwrap()
+                .as_bytes(),
+            probe
+        );
+        let bytes = v1_frame(b"hi", true, true);
+        let mut parser = MspParser::<16>::new();
+        assert_eq!(parser.next(&mut &bytes[..10]), Ok(None));
+        assert_eq!(
+            parser.next(&mut &bytes[10..]).unwrap().unwrap().payload(),
+            b"hi"
+        );
+    }
+
     #[test]
     fn checksum_known_vector() {
         assert_eq!(crc8_dvbs2_slice(0, b"123456789"), 0xbc);
@@ -772,7 +1200,7 @@ mod tests {
         let inner = frame(b"hello");
         for prefix_len in 0..HEADER_LEN {
             let mut payload = std::vec![b'n'; 64];
-            payload.extend_from_slice(b"$$X?$M>");
+            payload.extend_from_slice(b"$$X?$Y>");
             payload.extend_from_slice(&inner[..prefix_len]);
             let mut outer = frame(&payload);
             // Replace the outer CRC with the next byte of the embedded frame.
@@ -1087,13 +1515,13 @@ mod tests {
                 assert_eq!(
                     MspFrame::try_from(&bytes[..length]),
                     Err(MspFrameError::Incomplete {
-                        required: HEADER_LEN,
+                        required: if length < 2 { 2 } else { HEADER_LEN },
                         actual: length,
                     })
                 );
             }
         }
-        for bytes in [b"n".as_slice(), b"noise", b"$M", b"$M>"] {
+        for bytes in [b"n".as_slice(), b"noise", b"$Y", b"$Y>"] {
             assert_eq!(
                 MspFrame::try_from(bytes),
                 Err(MspFrameError::InvalidPreamble)
