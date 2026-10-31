@@ -83,7 +83,8 @@ fn main() -> ExitCode {
                         }
                     };
                     println!(
-                        "{:?} command_id={} flags=0x{:02x} len={} payload={:02X?}",
+                        "{:?} {:?} command_id={} flags=0x{:02x} len={} payload={:02X?}",
+                        frame.version(),
                         frame.direction(),
                         frame.command_id(),
                         frame.flags(),

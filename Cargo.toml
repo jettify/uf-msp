@@ -12,7 +12,6 @@ categories = [
 ]
 authors = ["Nickolai Novik <nickolainovik@gmail.com>"]
 license = "Apache-2.0"
-homepage = "https://github.com/jettify/uf-msp"
 repository = "https://github.com/jettify/uf-msp"
 readme = "README.md"
 
