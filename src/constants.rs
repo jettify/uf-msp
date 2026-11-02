@@ -1,5 +1,14 @@
 // Shared framing constants.
 
+/// Command ID for raw IMU telemetry and polling requests.
+pub const MSP_RAW_IMU: u16 = 102;
+
+/// Command ID for attitude telemetry and polling requests.
+pub const MSP_ATTITUDE: u16 = 108;
+
+/// Command ID for altitude telemetry and polling requests.
+pub const MSP_ALTITUDE: u16 = 109;
+
 /// Length of the 3-byte preamble: `$` (1), version `M`/`X` (1), direction (1).
 pub(crate) const PREAMBLE_LEN: usize = 3;
 

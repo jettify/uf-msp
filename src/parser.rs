@@ -1640,6 +1640,25 @@ mod tests {
     }
 
     #[test]
+    fn packet_iterator_yields_internal_error_once_and_reset_recovers() {
+        let mut parser = MspParser::<9>::new();
+        parser.start = 1;
+        parser.end = 0;
+        let mut input = &[][..];
+        let mut packets = parser.packets(&mut input);
+        assert_eq!(
+            packets.next(),
+            Some(Err(crate::MspPacketError::Parser(
+                MspParserError::InvalidBufferState
+            )))
+        );
+        assert_eq!(packets.next(), None);
+        assert_eq!(packets.next(), None);
+        parser.reset();
+        assert_eq!(parser.next_packet(&mut input), Ok(None));
+    }
+
+    #[test]
     fn failed_buffer_append_does_not_consume_input_or_change_state() {
         let mut parser = MspParser::<9>::new();
         parser.end = 8;
