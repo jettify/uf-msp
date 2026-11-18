@@ -49,14 +49,16 @@ impl MspDirection {
 /// Updates a running CRC-8 (DVB-S2) with a single byte.
 #[inline]
 #[must_use]
-fn crc8_dvbs2_byte(mut crc: u8, byte: u8) -> u8 {
+const fn crc8_dvbs2_byte(mut crc: u8, byte: u8) -> u8 {
     crc ^= byte;
-    for _ in 0..8 {
+    let mut bit = 0;
+    while bit < 8 {
         if (crc & 0x80) != 0 {
             crc = (crc << 1) ^ CRC8_DVBS2_POLY;
         } else {
             crc <<= 1;
         }
+        bit += 1;
     }
     crc
 }
@@ -64,9 +66,13 @@ fn crc8_dvbs2_byte(mut crc: u8, byte: u8) -> u8 {
 /// Computes the CRC-8 (DVB-S2) checksum over a byte slice with an initial value.
 #[inline]
 #[must_use]
-pub fn crc8_dvbs2_slice(initial: u8, data: &[u8]) -> u8 {
-    data.iter()
-        .fold(initial, |crc, &byte| crc8_dvbs2_byte(crc, byte))
+pub const fn crc8_dvbs2_slice(initial: u8, mut data: &[u8]) -> u8 {
+    let mut crc = initial;
+    while let [byte, rest @ ..] = data {
+        crc = crc8_dvbs2_byte(crc, *byte);
+        data = rest;
+    }
+    crc
 }
 
 /// Why a standalone byte slice could not be validated as an MSP frame.
@@ -177,52 +183,44 @@ impl<'a> MspFrame<'a> {
 
     /// Returns the complete wire frame, including its checksum.
     #[must_use]
-    pub fn as_bytes(&self) -> &'a [u8] {
+    pub const fn as_bytes(&self) -> &'a [u8] {
         self.bytes
     }
 
     /// Returns the framing version (jumbo frames retain their underlying version).
     #[must_use]
-    pub fn version(&self) -> MspVersion {
+    pub const fn version(&self) -> MspVersion {
         self.version
     }
 
     /// Returns the direction of this frame (request, response, or error).
     #[must_use]
-    pub fn direction(&self) -> MspDirection {
+    pub const fn direction(&self) -> MspDirection {
         self.direction
     }
 
     /// Returns the 8-bit flag field, or zero for v1.
     #[must_use]
-    pub fn flags(&self) -> u8 {
+    pub const fn flags(&self) -> u8 {
         self.flags
     }
 
     /// Returns the 16-bit command ID.
     #[must_use]
-    pub fn command_id(&self) -> u16 {
+    pub const fn command_id(&self) -> u16 {
         self.command_id
     }
 
     /// Returns the payload slice borrowing directly from the frame.
     #[must_use]
-    pub fn payload(&self) -> &'a [u8] {
+    pub const fn payload(&self) -> &'a [u8] {
         self.payload
     }
 
     /// Returns the final wire checksum: outer XOR for v1 formats, CRC for native v2.
     #[must_use]
-    pub fn checksum(&self) -> u8 {
+    pub const fn checksum(&self) -> u8 {
         self.checksum
-    }
-}
-
-impl core::ops::Deref for MspFrame<'_> {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        self.bytes
     }
 }
 
@@ -712,6 +710,17 @@ impl<const N: usize> MspParser<N> {
                 }
             }
         }
+    }
+}
+
+impl<const N: usize> core::fmt::Debug for MspParser<N> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("MspParser")
+            .field("capacity", &N)
+            .field("start", &self.start)
+            .field("end", &self.end)
+            .field("buffered_len", &self.end.saturating_sub(self.start))
+            .finish_non_exhaustive()
     }
 }
 
@@ -1480,7 +1489,7 @@ mod tests {
         let frame = MspFrame::from_slice(&bytes).expect("valid frame");
 
         assert_eq!(frame.as_bytes(), bytes.as_slice());
-        assert_eq!(&frame[..], bytes.as_slice()); // Deref test
+        assert_eq!(frame.as_ref(), bytes.as_slice());
         assert_eq!(frame.direction(), MspDirection::Response);
         assert_eq!(frame.flags(), 0);
         assert_eq!(frame.command_id(), 42);
@@ -1530,7 +1539,7 @@ mod tests {
                     };
                     assert_eq!(parsed, standalone);
                     assert_eq!(parsed.as_ref(), bytes);
-                    assert_eq!(&*parsed, bytes);
+                    assert_eq!(parsed.as_bytes(), bytes);
                     assert_eq!(
                         parsed.payload().as_ptr(),
                         if split == 0 || split == bytes.len() {
@@ -1697,6 +1706,60 @@ mod tests {
         assert_eq!(
             error_message(&MspParserError::InvalidBufferState),
             "invalid MSP parser buffer state"
+        );
+    }
+
+    #[test]
+    fn crc_and_frame_getters_are_const() {
+        const CRC: u8 = crc8_dvbs2_slice(0, b"123456789");
+        const fn extract<'a>(
+            frame: &MspFrame<'a>,
+        ) -> (&'a [u8], MspVersion, MspDirection, u8, u16, &'a [u8], u8) {
+            (
+                frame.as_bytes(),
+                frame.version(),
+                frame.direction(),
+                frame.flags(),
+                frame.command_id(),
+                frame.payload(),
+                frame.checksum(),
+            )
+        }
+
+        assert_eq!(CRC, 0xbc);
+        let bytes = frame(b"hi");
+        let parsed = MspFrame::try_from(bytes.as_slice()).unwrap();
+        let (wire, version, direction, flags, command_id, payload, checksum) = extract(&parsed);
+        assert_eq!(wire, bytes.as_slice());
+        assert_eq!(version, MspVersion::V2);
+        assert_eq!(direction, MspDirection::Response);
+        assert_eq!(flags, 0);
+        assert_eq!(command_id, 42);
+        assert_eq!(payload, b"hi");
+        assert_eq!(checksum, *bytes.last().unwrap());
+    }
+
+    #[test]
+    fn parser_implements_debug_without_dumping_buffer() {
+        let mut parser = MspParser::<32>::new();
+        assert_eq!(
+            std::format!("{parser:?}"),
+            "MspParser { capacity: 32, start: 0, end: 0, buffered_len: 0, .. }"
+        );
+
+        let partial = frame(b"hello");
+        assert_eq!(parser.next(&mut &partial[..5]), Ok(None));
+        assert_eq!(
+            std::format!("{parser:?}"),
+            "MspParser { capacity: 32, start: 0, end: 5, buffered_len: 5, .. }"
+        );
+
+        // Invalid internal state must still format without panicking.
+        parser.start = 5;
+        parser.end = 2;
+        assert_eq!(
+            std::format!("{parser:?}"),
+            "MspParser { capacity: 32, start: 5, end: 2, buffered_len: 0, .. }"
         );
     }
 }

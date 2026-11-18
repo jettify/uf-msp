@@ -414,3 +414,24 @@ fn public_command_constants_match_wire_ids() {
     assert_eq!(MspMessage::AttitudeRequest.command_id(), MSP_ATTITUDE);
     assert_eq!(MspMessage::AltitudeRequest.command_id(), MSP_ALTITUDE);
 }
+
+#[test]
+fn packet_iterator_implements_debug() {
+    let bytes = wire(MspVersion::V2, b'<', MSP_ATTITUDE, &[]);
+    let mut parser = MspParser::<32>::new();
+    let mut input = bytes.as_slice();
+    let mut packets = parser.packets(&mut input);
+    assert_eq!(
+        format!("{packets:?}"),
+        format!(
+            "MspPackets {{ parser: MspParser {{ capacity: 32, start: 0, end: 0, buffered_len: 0, .. }}, remaining_len: {}, finished: false }}",
+            bytes.len()
+        )
+    );
+    assert!(packets.next().is_some());
+    assert!(packets.next().is_none());
+    assert_eq!(
+        format!("{packets:?}"),
+        "MspPackets { parser: MspParser { capacity: 32, start: 0, end: 0, buffered_len: 0, .. }, remaining_len: 0, finished: true }"
+    );
+}

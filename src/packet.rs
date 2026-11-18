@@ -304,6 +304,16 @@ pub struct MspPackets<'a, 'input, const N: usize> {
     finished: bool,
 }
 
+impl<const N: usize> core::fmt::Debug for MspPackets<'_, '_, N> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("MspPackets")
+            .field("parser", &self.parser)
+            .field("remaining_len", &self.input.len())
+            .field("finished", &self.finished)
+            .finish()
+    }
+}
+
 impl<const N: usize> Iterator for MspPackets<'_, '_, N> {
     type Item = Result<MspPacket, MspPacketError>;
 
