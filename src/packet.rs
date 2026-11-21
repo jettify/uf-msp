@@ -1,11 +1,11 @@
-use crate::MSP_ALTITUDE;
-use crate::MSP_ATTITUDE;
-use crate::MSP_RAW_IMU;
 use crate::MspDirection;
 use crate::MspFrame;
 use crate::MspParser;
 use crate::MspParserError;
 use crate::MspVersion;
+use crate::commands::MSP_ALTITUDE;
+use crate::commands::MSP_ATTITUDE;
+use crate::commands::MSP_RAW_IMU;
 
 /// Attitude in the integer units transmitted by `MSP_ATTITUDE`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -13,6 +13,37 @@ pub struct MspAttitude {
     pub roll_decidegrees: i16,
     pub pitch_decidegrees: i16,
     pub yaw_degrees: i16,
+}
+
+impl MspAttitude {
+    /// MSP command ID (`MSP_ATTITUDE`).
+    pub const COMMAND_ID: u16 = MSP_ATTITUDE;
+
+    /// Minimum response payload length in bytes.
+    pub const PAYLOAD_LEN: usize = 6;
+
+    /// Decodes an `MSP_ATTITUDE` response payload prefix, ignoring trailing bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MspDecodeError::PayloadTooShort`] if `payload` has fewer than
+    /// [`Self::PAYLOAD_LEN`] bytes.
+    pub fn decode(payload: &[u8]) -> Result<Self, MspDecodeError> {
+        let [r0, r1, p0, p1, y0, y1] = prefix::<{ Self::PAYLOAD_LEN }>(Self::COMMAND_ID, payload)?;
+        Ok(Self {
+            roll_decidegrees: i16::from_le_bytes([r0, r1]),
+            pitch_decidegrees: i16::from_le_bytes([p0, p1]),
+            yaw_degrees: i16::from_le_bytes([y0, y1]),
+        })
+    }
+}
+
+impl TryFrom<&[u8]> for MspAttitude {
+    type Error = MspDecodeError;
+
+    fn try_from(payload: &[u8]) -> Result<Self, Self::Error> {
+        Self::decode(payload)
+    }
 }
 
 /// `MSP_RAW_IMU` values in X, Y, Z order.
@@ -26,11 +57,103 @@ pub struct MspRawImu {
     pub mag: [i16; 3],
 }
 
+impl MspRawImu {
+    /// MSP command ID (`MSP_RAW_IMU`).
+    pub const COMMAND_ID: u16 = MSP_RAW_IMU;
+
+    /// Minimum response payload length in bytes.
+    pub const PAYLOAD_LEN: usize = 18;
+
+    /// Decodes an `MSP_RAW_IMU` response payload prefix, ignoring trailing bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MspDecodeError::PayloadTooShort`] if `payload` has fewer than
+    /// [`Self::PAYLOAD_LEN`] bytes.
+    pub fn decode(payload: &[u8]) -> Result<Self, MspDecodeError> {
+        let [
+            a0,
+            a1,
+            a2,
+            a3,
+            a4,
+            a5,
+            g0,
+            g1,
+            g2,
+            g3,
+            g4,
+            g5,
+            m0,
+            m1,
+            m2,
+            m3,
+            m4,
+            m5,
+        ] = prefix::<{ Self::PAYLOAD_LEN }>(Self::COMMAND_ID, payload)?;
+        Ok(Self {
+            acc: [
+                i16::from_le_bytes([a0, a1]),
+                i16::from_le_bytes([a2, a3]),
+                i16::from_le_bytes([a4, a5]),
+            ],
+            gyro: [
+                i16::from_le_bytes([g0, g1]),
+                i16::from_le_bytes([g2, g3]),
+                i16::from_le_bytes([g4, g5]),
+            ],
+            mag: [
+                i16::from_le_bytes([m0, m1]),
+                i16::from_le_bytes([m2, m3]),
+                i16::from_le_bytes([m4, m5]),
+            ],
+        })
+    }
+}
+
+impl TryFrom<&[u8]> for MspRawImu {
+    type Error = MspDecodeError;
+
+    fn try_from(payload: &[u8]) -> Result<Self, Self::Error> {
+        Self::decode(payload)
+    }
+}
+
 /// Altitude and vertical speed transmitted by `MSP_ALTITUDE`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MspAltitude {
     pub altitude_cm: i32,
     pub vario_cm_s: i16,
+}
+
+impl MspAltitude {
+    /// MSP command ID (`MSP_ALTITUDE`).
+    pub const COMMAND_ID: u16 = MSP_ALTITUDE;
+
+    /// Minimum response payload length in bytes.
+    pub const PAYLOAD_LEN: usize = 6;
+
+    /// Decodes an `MSP_ALTITUDE` response payload prefix, ignoring trailing bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MspDecodeError::PayloadTooShort`] if `payload` has fewer than
+    /// [`Self::PAYLOAD_LEN`] bytes.
+    pub fn decode(payload: &[u8]) -> Result<Self, MspDecodeError> {
+        let [a0, a1, a2, a3, v0, v1] = prefix::<{ Self::PAYLOAD_LEN }>(Self::COMMAND_ID, payload)?;
+        Ok(Self {
+            altitude_cm: i32::from_le_bytes([a0, a1, a2, a3]),
+            vario_cm_s: i16::from_le_bytes([v0, v1]),
+        })
+    }
+}
+
+impl TryFrom<&[u8]> for MspAltitude {
+    type Error = MspDecodeError;
+
+    fn try_from(payload: &[u8]) -> Result<Self, Self::Error> {
+        Self::decode(payload)
+    }
 }
 
 /// Supported polling requests and telemetry responses.
@@ -131,16 +254,30 @@ impl core::fmt::Display for MspDecodeError {
 
 impl core::error::Error for MspDecodeError {}
 
-fn prefix<const N: usize>(frame: MspFrame<'_>) -> Result<[u8; N], MspDecodeError> {
-    frame
-        .payload()
+fn prefix<const N: usize>(command_id: u16, payload: &[u8]) -> Result<[u8; N], MspDecodeError> {
+    payload
         .get(..N)
         .and_then(|bytes| bytes.try_into().ok())
         .ok_or(MspDecodeError::PayloadTooShort {
-            command_id: frame.command_id(),
+            command_id,
             required: N,
-            actual: frame.payload().len(),
+            actual: payload.len(),
         })
+}
+
+fn decode_command<T>(
+    command_id: u16,
+    direction: MspDirection,
+    payload: &[u8],
+    request: MspMessage,
+    decode: fn(&[u8]) -> Result<T, MspDecodeError>,
+    wrap: fn(T) -> MspMessage,
+) -> Result<MspMessage, MspDecodeError> {
+    match direction {
+        MspDirection::Error => Err(MspDecodeError::RemoteError { command_id }),
+        MspDirection::Request => Ok(request),
+        MspDirection::Response => decode(payload).map(wrap),
+    }
 }
 
 impl TryFrom<MspFrame<'_>> for MspPacket {
@@ -151,72 +288,34 @@ impl TryFrom<MspFrame<'_>> for MspPacket {
     /// including checksums covering all declared payload bytes.
     fn try_from(frame: MspFrame<'_>) -> Result<Self, Self::Error> {
         let command_id = frame.command_id();
-        let request = match command_id {
-            MSP_ATTITUDE => MspMessage::AttitudeRequest,
-            MSP_RAW_IMU => MspMessage::RawImuRequest,
-            MSP_ALTITUDE => MspMessage::AltitudeRequest,
+        let direction = frame.direction();
+        let payload = frame.payload();
+        let message = match command_id {
+            MSP_ATTITUDE => decode_command(
+                command_id,
+                direction,
+                payload,
+                MspMessage::AttitudeRequest,
+                MspAttitude::decode,
+                MspMessage::Attitude,
+            )?,
+            MSP_RAW_IMU => decode_command(
+                command_id,
+                direction,
+                payload,
+                MspMessage::RawImuRequest,
+                MspRawImu::decode,
+                MspMessage::RawImu,
+            )?,
+            MSP_ALTITUDE => decode_command(
+                command_id,
+                direction,
+                payload,
+                MspMessage::AltitudeRequest,
+                MspAltitude::decode,
+                MspMessage::Altitude,
+            )?,
             _ => return Err(MspDecodeError::UnsupportedCommand { command_id }),
-        };
-        let message = match frame.direction() {
-            MspDirection::Error => return Err(MspDecodeError::RemoteError { command_id }),
-            MspDirection::Request => request,
-            MspDirection::Response => match command_id {
-                MSP_ATTITUDE => {
-                    let [r0, r1, p0, p1, y0, y1] = prefix(frame)?;
-                    MspMessage::Attitude(MspAttitude {
-                        roll_decidegrees: i16::from_le_bytes([r0, r1]),
-                        pitch_decidegrees: i16::from_le_bytes([p0, p1]),
-                        yaw_degrees: i16::from_le_bytes([y0, y1]),
-                    })
-                }
-                MSP_RAW_IMU => {
-                    let [
-                        a0,
-                        a1,
-                        a2,
-                        a3,
-                        a4,
-                        a5,
-                        g0,
-                        g1,
-                        g2,
-                        g3,
-                        g4,
-                        g5,
-                        m0,
-                        m1,
-                        m2,
-                        m3,
-                        m4,
-                        m5,
-                    ] = prefix(frame)?;
-                    MspMessage::RawImu(MspRawImu {
-                        acc: [
-                            i16::from_le_bytes([a0, a1]),
-                            i16::from_le_bytes([a2, a3]),
-                            i16::from_le_bytes([a4, a5]),
-                        ],
-                        gyro: [
-                            i16::from_le_bytes([g0, g1]),
-                            i16::from_le_bytes([g2, g3]),
-                            i16::from_le_bytes([g4, g5]),
-                        ],
-                        mag: [
-                            i16::from_le_bytes([m0, m1]),
-                            i16::from_le_bytes([m2, m3]),
-                            i16::from_le_bytes([m4, m5]),
-                        ],
-                    })
-                }
-                MSP_ALTITUDE => {
-                    let [a0, a1, a2, a3, v0, v1] = prefix(frame)?;
-                    MspMessage::Altitude(MspAltitude {
-                        altitude_cm: i32::from_le_bytes([a0, a1, a2, a3]),
-                        vario_cm_s: i16::from_le_bytes([v0, v1]),
-                    })
-                }
-                _ => return Err(MspDecodeError::UnsupportedCommand { command_id }),
-            },
         };
         Ok(Self {
             version: frame.version(),

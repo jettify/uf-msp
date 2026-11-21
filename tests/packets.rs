@@ -9,6 +9,9 @@ use uf_msp::MspPacketError;
 use uf_msp::MspParser;
 use uf_msp::MspRawImu;
 use uf_msp::MspVersion;
+use uf_msp::commands::MSP_ALTITUDE;
+use uf_msp::commands::MSP_ATTITUDE;
+use uf_msp::commands::MSP_RAW_IMU;
 use uf_msp::crc8_dvbs2_slice;
 
 const VERSIONS: [MspVersion; 3] = [MspVersion::V1, MspVersion::V2, MspVersion::V2OverV1];
@@ -364,9 +367,6 @@ fn errors_implement_display_and_source() {
     let error = MspPacketError::Parser(uf_msp::MspParserError::InvalidBufferState);
     assert_eq!(error.source().unwrap().to_string(), error.to_string());
 }
-use uf_msp::MSP_ALTITUDE;
-use uf_msp::MSP_ATTITUDE;
-use uf_msp::MSP_RAW_IMU;
 
 #[test]
 fn packet_errors_support_question_mark_in_manual_decoding() {
@@ -410,9 +410,61 @@ fn public_command_constants_match_wire_ids() {
     assert_eq!(MSP_RAW_IMU, 102);
     assert_eq!(MSP_ATTITUDE, 108);
     assert_eq!(MSP_ALTITUDE, 109);
+    assert_eq!(MspRawImu::COMMAND_ID, MSP_RAW_IMU);
+    assert_eq!(MspAttitude::COMMAND_ID, MSP_ATTITUDE);
+    assert_eq!(MspAltitude::COMMAND_ID, MSP_ALTITUDE);
+    assert_eq!(MspRawImu::PAYLOAD_LEN, 18);
+    assert_eq!(MspAttitude::PAYLOAD_LEN, 6);
+    assert_eq!(MspAltitude::PAYLOAD_LEN, 6);
     assert_eq!(MspMessage::RawImuRequest.command_id(), MSP_RAW_IMU);
     assert_eq!(MspMessage::AttitudeRequest.command_id(), MSP_ATTITUDE);
     assert_eq!(MspMessage::AltitudeRequest.command_id(), MSP_ALTITUDE);
+}
+
+#[test]
+fn per_message_payload_decoders_work_directly() {
+    for (message, mut payload) in samples() {
+        payload.extend_from_slice(&[0xff; 4]);
+        match message {
+            MspMessage::Attitude(expected) => {
+                assert_eq!(MspAttitude::decode(&payload), Ok(expected));
+                assert_eq!(MspAttitude::try_from(payload.as_slice()), Ok(expected));
+                assert_eq!(
+                    MspAttitude::decode(&payload[..5]),
+                    Err(MspDecodeError::PayloadTooShort {
+                        command_id: MSP_ATTITUDE,
+                        required: 6,
+                        actual: 5,
+                    })
+                );
+            }
+            MspMessage::RawImu(expected) => {
+                assert_eq!(MspRawImu::decode(&payload), Ok(expected));
+                assert_eq!(MspRawImu::try_from(payload.as_slice()), Ok(expected));
+                assert_eq!(
+                    MspRawImu::decode(&payload[..17]),
+                    Err(MspDecodeError::PayloadTooShort {
+                        command_id: MSP_RAW_IMU,
+                        required: 18,
+                        actual: 17,
+                    })
+                );
+            }
+            MspMessage::Altitude(expected) => {
+                assert_eq!(MspAltitude::decode(&payload), Ok(expected));
+                assert_eq!(MspAltitude::try_from(payload.as_slice()), Ok(expected));
+                assert_eq!(
+                    MspAltitude::decode(&payload[..5]),
+                    Err(MspDecodeError::PayloadTooShort {
+                        command_id: MSP_ALTITUDE,
+                        required: 6,
+                        actual: 5,
+                    })
+                );
+            }
+            _ => unreachable!(),
+        }
+    }
 }
 
 #[test]

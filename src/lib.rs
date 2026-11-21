@@ -5,9 +5,13 @@ mod constants;
 mod packet;
 mod parser;
 
-pub use constants::MSP_ALTITUDE;
-pub use constants::MSP_ATTITUDE;
-pub use constants::MSP_RAW_IMU;
+/// MSP command IDs.
+pub mod commands {
+    pub use crate::constants::MSP_ALTITUDE;
+    pub use crate::constants::MSP_ATTITUDE;
+    pub use crate::constants::MSP_RAW_IMU;
+}
+
 pub use packet::MspAltitude;
 pub use packet::MspAttitude;
 pub use packet::MspDecodeError;
