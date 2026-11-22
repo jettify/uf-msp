@@ -350,11 +350,23 @@ impl core::error::Error for MspDecodeError {}
 #[non_exhaustive]
 pub enum MspEncodeError {
     /// The destination buffer cannot hold the serialized payload or frame.
-    BufferTooSmall { required: usize, actual: usize },
+    BufferTooSmall {
+        required: usize,
+        actual: usize,
+    },
     /// MSP v1 only supports command IDs `0..=254` (`255` is reserved for v2 encapsulation).
-    InvalidV1Command { command_id: u16 },
+    InvalidV1Command {
+        command_id: u16,
+    },
     /// The payload exceeds the maximum size representable by the chosen wire format.
-    PayloadTooLarge { max: usize, actual: usize },
+    PayloadTooLarge {
+        max: usize,
+        actual: usize,
+    },
+    PayloadSizeMismatch {
+        expected: usize,
+        written: usize,
+    },
 }
 
 impl core::fmt::Display for MspEncodeError {
@@ -376,6 +388,12 @@ impl core::fmt::Display for MspEncodeError {
                 write!(
                     f,
                     "MSP payload too large: maximum {max} bytes, got {actual}"
+                )
+            }
+            Self::PayloadSizeMismatch { expected, written } => {
+                write!(
+                    f,
+                    "MSP payload size mismatch: expected {expected} bytes, wrote {written}"
                 )
             }
         }
@@ -690,14 +708,21 @@ pub fn write_packet_to_buffer<P: MspPayload>(
     flags: u8,
     payload: &P,
 ) -> Result<usize, MspEncodeError> {
+    let expected = payload.payload_size();
     encode_frame_with(
         buffer,
         version,
         direction,
         flags,
         P::COMMAND_ID,
-        payload.payload_size(),
-        |dst| payload.to_bytes(dst),
+        expected,
+        |dst| {
+            let written = payload.to_bytes(dst)?;
+            if written != expected {
+                return Err(MspEncodeError::PayloadSizeMismatch { expected, written });
+            }
+            Ok(written)
+        },
     )
 }
 

@@ -597,6 +597,45 @@ fn write_packet_and_request_across_all_versions_and_jumbo_boundaries() {
 }
 
 #[test]
+fn frame_encoding_rejects_mismatched_payload_sizes() {
+    struct MiscountedPayload(usize);
+
+    impl MspPayload for MiscountedPayload {
+        const COMMAND_ID: u16 = MSP_ATTITUDE;
+        const MIN_PAYLOAD_SIZE: usize = 2;
+
+        fn from_bytes(_data: &[u8]) -> Result<Self, MspDecodeError> {
+            Ok(Self(Self::MIN_PAYLOAD_SIZE))
+        }
+
+        fn to_bytes(&self, buffer: &mut [u8]) -> Result<usize, MspEncodeError> {
+            buffer[0] = 0x11;
+            Ok(self.0)
+        }
+    }
+
+    for version in VERSIONS {
+        for written in [1, 3] {
+            let mut buffer = [0xee; 32];
+            assert_eq!(
+                write_packet_to_buffer(
+                    &mut buffer,
+                    version,
+                    MspDirection::Response,
+                    0,
+                    &MiscountedPayload(written),
+                ),
+                Err(MspEncodeError::PayloadSizeMismatch {
+                    expected: 2,
+                    written,
+                }),
+                "{version:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn frame_encoding_validates_v1_commands_and_payload_limits() {
     struct OversizedPayload(usize);
     impl MspPayload for OversizedPayload {
