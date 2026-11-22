@@ -5,7 +5,7 @@
 [![crates.io](https://img.shields.io/crates/v/uf-msp)](https://crates.io/crates/uf-msp)
 [![docs.rs](https://img.shields.io/docsrs/uf-msp)](https://docs.rs/uf-msp/latest/uf_msp/)
 
-A `no_std`, allocation-free Rust library for MSP framing and owned packet decoding.
+A `no_std`, allocation-free Rust library for MSP (Multiwii Serial Protocol) framing and owned packet decoding.
 Requires Rust 1.88 or newer.
 
 ## Features
@@ -17,7 +17,7 @@ Requires Rust 1.88 or newer.
 * Raw frame parsing and encoding for custom payloads and commands without typed support.
 * Optional `defmt` support for embedded logging.
 
-## Usage
+![Live roll and pitch decoded over MSP](docs/attitude.webp)
 
 ### Decode a typed packet
 
@@ -83,6 +83,17 @@ fn main() -> Result<(), MspEncodeError> {
 
 Reuse the parser across reads. Its buffer must fit the entire wire frame when
 the frame spans multiple chunks.
+
+### Plot live attitude
+
+Connect the flight controller over USB and close the configurator so the example
+can open the port. On macOS, run `ls /dev/cu.*` to find the board's
+`/dev/cu.usbmodem…` device. This standalone egui example requires Rust 1.95.
+
+```sh
+cargo run --manifest-path examples/attitude/Cargo.toml -- /dev/cu.usbmodemYOUR_BOARD
+```
+
 
 ## Implementation status
 
