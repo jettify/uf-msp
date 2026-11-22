@@ -168,15 +168,6 @@ impl MspDecodeError {
             _ => None,
         }
     }
-
-    #[must_use]
-    pub(crate) const fn from_capacity(command_id: u16, err: CapacityError) -> Self {
-        Self::CapacityExceeded {
-            command_id,
-            capacity: err.capacity,
-            requested: err.requested,
-        }
-    }
 }
 
 impl core::fmt::Display for MspDecodeError {

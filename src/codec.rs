@@ -154,6 +154,13 @@ impl<'a> PayloadReader<'a> {
         Ok(b0)
     }
 
+    /// Reads a single byte and interprets `0` as `false` and any non-zero value as `true`.
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) fn read_bool(&mut self) -> Result<bool, MspDecodeError> {
+        Ok(self.read_u8()? != 0)
+    }
+
     #[inline]
     #[allow(dead_code)]
     pub(crate) fn read_i8(&mut self) -> Result<i8, MspDecodeError> {
@@ -187,6 +194,80 @@ impl<'a> PayloadReader<'a> {
     #[allow(dead_code)]
     pub(crate) fn read_u64(&mut self) -> Result<u64, MspDecodeError> {
         Ok(u64::from_le_bytes(self.read_array::<8>()?))
+    }
+
+    /// Reads `len` bytes from the cursor into a fixed-capacity `heapless::Vec<u8, N, u8>`.
+    #[inline]
+    pub(crate) fn read_vec<const N: usize>(
+        &mut self,
+        len: usize,
+    ) -> Result<heapless::Vec<u8, N, u8>, MspDecodeError> {
+        let bytes = self.read_bytes(len)?;
+        heapless::Vec::from_slice(bytes).map_err(|_| MspDecodeError::CapacityExceeded {
+            command_id: self.command_id,
+            capacity: N,
+            requested: len,
+        })
+    }
+
+    /// Reads a 1-byte length prefix (`u8`) followed by that many bytes.
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) fn read_len_prefixed_bytes(&mut self) -> Result<&'a [u8], MspDecodeError> {
+        let len = usize::from(self.read_u8()?);
+        self.read_bytes(len)
+    }
+
+    /// Reads a 1-byte length prefix (`u8`) followed by a UTF-8 string slice of that byte length.
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) fn read_len_prefixed_str(&mut self) -> Result<&'a str, MspDecodeError> {
+        let bytes = self.read_len_prefixed_bytes()?;
+        core::str::from_utf8(bytes).map_err(|_| MspDecodeError::InvalidUtf8 {
+            command_id: self.command_id,
+        })
+    }
+
+    /// Reads a 1-byte length prefix (`u8`) followed by a UTF-8 string into a `heapless::String<N, u8>`.
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) fn read_len_prefixed_string<const N: usize>(
+        &mut self,
+    ) -> Result<heapless::String<N, u8>, MspDecodeError> {
+        let s = self.read_len_prefixed_str()?;
+        let mut out = heapless::String::new();
+        out.push_str(s)
+            .map_err(|_| MspDecodeError::CapacityExceeded {
+                command_id: self.command_id,
+                capacity: N,
+                requested: s.len(),
+            })?;
+        Ok(out)
+    }
+
+    /// Consumes all remaining bytes in the payload and validates them as UTF-8.
+    #[inline]
+    pub(crate) fn read_remaining_str(&mut self) -> Result<&'a str, MspDecodeError> {
+        let bytes = self.read_bytes(self.remaining_len())?;
+        core::str::from_utf8(bytes).map_err(|_| MspDecodeError::InvalidUtf8 {
+            command_id: self.command_id,
+        })
+    }
+
+    /// Consumes all remaining bytes in the payload as a UTF-8 `heapless::String<N, u8>`.
+    #[inline]
+    pub(crate) fn read_remaining_string<const N: usize>(
+        &mut self,
+    ) -> Result<heapless::String<N, u8>, MspDecodeError> {
+        let s = self.read_remaining_str()?;
+        let mut out = heapless::String::new();
+        out.push_str(s)
+            .map_err(|_| MspDecodeError::CapacityExceeded {
+                command_id: self.command_id,
+                capacity: N,
+                requested: s.len(),
+            })?;
+        Ok(out)
     }
 }
 
@@ -263,6 +344,13 @@ impl<'a> PayloadWriter<'a> {
         self.write_bytes(&[value])
     }
 
+    /// Writes a boolean as a single byte (`0` for `false`, `1` for `true`).
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) fn write_bool(&mut self, value: bool) -> Result<(), MspEncodeError> {
+        self.write_u8(u8::from(value))
+    }
+
     #[inline]
     #[allow(dead_code)]
     pub(crate) fn write_i8(&mut self, value: i8) -> Result<(), MspEncodeError> {
@@ -295,6 +383,38 @@ impl<'a> PayloadWriter<'a> {
     #[allow(dead_code)]
     pub(crate) fn write_u64(&mut self, value: u64) -> Result<(), MspEncodeError> {
         self.write_bytes(&value.to_le_bytes())
+    }
+
+    /// Writes `bytes` prefixed by its 1-byte (`u8`) length.
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) fn write_len_prefixed_bytes(&mut self, bytes: &[u8]) -> Result<(), MspEncodeError> {
+        let len = u8::try_from(bytes.len()).map_err(|_| MspEncodeError::PayloadTooLarge {
+            max: usize::from(u8::MAX),
+            actual: bytes.len(),
+        })?;
+        let actual = self.buffer.len();
+        let next_pos = self
+            .pos
+            .checked_add(1)
+            .and_then(|n| n.checked_add(bytes.len()))
+            .ok_or(MspEncodeError::BufferTooSmall {
+                required: usize::MAX,
+                actual,
+            })?;
+        let required = next_pos.max(self.min_required);
+        if actual < required {
+            return Err(MspEncodeError::BufferTooSmall { required, actual });
+        }
+        self.write_u8(len)?;
+        self.write_bytes(bytes)
+    }
+
+    /// Writes a UTF-8 string slice `s` prefixed by its 1-byte (`u8`) byte length.
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) fn write_len_prefixed_str(&mut self, s: &str) -> Result<(), MspEncodeError> {
+        self.write_len_prefixed_bytes(s.as_bytes())
     }
 }
 
@@ -740,6 +860,93 @@ mod tests {
             Err(MspEncodeError::BufferTooSmall {
                 required: 4,
                 actual: 3,
+            })
+        );
+    }
+
+    #[test]
+    fn payload_reader_and_writer_handle_bool_and_length_prefixed_fields() {
+        let mut buf = [0u8; 32];
+        let mut writer = PayloadWriter::new(&mut buf);
+        writer.write_bool(false).unwrap();
+        writer.write_bool(true).unwrap();
+        writer.write_len_prefixed_bytes(&[0xaa, 0xbb]).unwrap();
+        writer.write_len_prefixed_str("BTFL").unwrap();
+        let written = writer.written();
+        assert_eq!(written, 1 + 1 + 3 + 5);
+
+        // Non-zero byte decodes as true
+        let mut raw = [0u8; 16];
+        raw[..written].copy_from_slice(&buf[..written]);
+        raw[1] = 42;
+        raw[written..written + 4].copy_from_slice(b"tail");
+
+        let mut reader = PayloadReader::new(20, &raw[..written + 4]);
+        assert!(!reader.read_bool().unwrap());
+        assert!(reader.read_bool().unwrap());
+        assert_eq!(reader.read_len_prefixed_bytes().unwrap(), &[0xaa, 0xbb]);
+        let s: heapless::String<4, u8> = reader.read_len_prefixed_string().unwrap();
+        assert_eq!(s.as_str(), "BTFL");
+        let tail: heapless::String<4, u8> = reader.read_remaining_string().unwrap();
+        assert_eq!(tail.as_str(), "tail");
+        assert_eq!(reader.remaining_len(), 0);
+
+        // CapacityExceeded on read_len_prefixed_string and read_vec
+        let mut reader = PayloadReader::new(21, &[4, b'B', b'T', b'F', b'L']);
+        assert_eq!(
+            reader.read_len_prefixed_string::<3>(),
+            Err(MspDecodeError::CapacityExceeded {
+                command_id: 21,
+                capacity: 3,
+                requested: 4,
+            })
+        );
+        let mut reader = PayloadReader::new(21, &[1, 2, 3, 4]);
+        assert_eq!(
+            reader.read_vec::<3>(4),
+            Err(MspDecodeError::CapacityExceeded {
+                command_id: 21,
+                capacity: 3,
+                requested: 4,
+            })
+        );
+
+        // InvalidUtf8 on read_len_prefixed_str
+        let mut reader = PayloadReader::new(22, &[2, 0xff, 0xfe]);
+        assert_eq!(
+            reader.read_len_prefixed_str(),
+            Err(MspDecodeError::InvalidUtf8 { command_id: 22 })
+        );
+
+        // Truncated length-prefixed payload reports PayloadTooShort
+        let mut reader = PayloadReader::new(23, &[5, b'a', b'b']);
+        assert_eq!(
+            reader.read_len_prefixed_bytes(),
+            Err(MspDecodeError::PayloadTooShort {
+                command_id: 23,
+                required: 6,
+                actual: 3,
+            })
+        );
+
+        // BufferTooSmall and PayloadTooLarge on write_len_prefixed_bytes
+        let mut small = [0u8; 3];
+        let mut writer = PayloadWriter::new(&mut small);
+        assert_eq!(
+            writer.write_len_prefixed_bytes(b"abcd"),
+            Err(MspEncodeError::BufferTooSmall {
+                required: 5,
+                actual: 3,
+            })
+        );
+        let oversized = [0u8; 256];
+        let mut large_buf = [0u8; 300];
+        let mut writer = PayloadWriter::new(&mut large_buf);
+        assert_eq!(
+            writer.write_len_prefixed_bytes(&oversized),
+            Err(MspEncodeError::PayloadTooLarge {
+                max: 255,
+                actual: 256,
             })
         );
     }

@@ -254,9 +254,7 @@ fn decode_craft_name(
     command_id: u16,
     data: &[u8],
 ) -> Result<heapless::String<MAX_CRAFT_NAME_LEN, u8>, MspDecodeError> {
-    let name =
-        core::str::from_utf8(data).map_err(|_| MspDecodeError::InvalidUtf8 { command_id })?;
-    copy_craft_name(name).map_err(|err| MspDecodeError::from_capacity(command_id, err))
+    PayloadReader::new(command_id, data).read_remaining_string()
 }
 
 /// Cumulative trailing fields appended to [`MspStatusExtended`] in newer Betaflight releases.
@@ -434,14 +432,7 @@ impl MspPayload for MspStatus {
             let average_system_load_percent = reader.read_u16()?;
             let gyro_cycle_time = reader.read_u16()?;
             let ext_len = usize::from(reader.read_u8()? & 0x0F);
-            let ext_bytes = reader.read_bytes(ext_len)?;
-            let flight_mode_flags_ext = heapless::Vec::from_slice(ext_bytes).map_err(|_| {
-                MspDecodeError::CapacityExceeded {
-                    command_id: Self::COMMAND_ID,
-                    capacity: MAX_FLIGHT_MODE_EXT_BYTES,
-                    requested: ext_bytes.len(),
-                }
-            })?;
+            let flight_mode_flags_ext = reader.read_vec(ext_len)?;
             let arming_disable_flags_count = reader.read_u8()?;
             let arming_disable_flags = reader.read_u32()?;
             let config_state_flags = reader.read_u8()?;
@@ -615,7 +606,7 @@ impl MspPayload for MspRebootResponse {
             PayloadReader::with_min_size(Self::COMMAND_ID, data, Self::MIN_PAYLOAD_SIZE)?;
         let mode = reader.read_u8()?;
         let msc_ready = if reader.remaining_len() >= 1 {
-            Some(reader.read_u8()? != 0)
+            Some(reader.read_bool()?)
         } else {
             None
         };
@@ -626,7 +617,7 @@ impl MspPayload for MspRebootResponse {
         let mut writer = PayloadWriter::with_min_size(buffer, self.payload_size())?;
         writer.write_u8(self.mode)?;
         if let Some(ready) = self.msc_ready {
-            writer.write_u8(u8::from(ready))?;
+            writer.write_bool(ready)?;
         }
         Ok(writer.written())
     }
