@@ -43,5 +43,3 @@ pub use parser::MspParser;
 pub use parser::MspVersion;
 pub use parser::crc8_dvbs2_slice;
 pub use types::CapacityError;
-pub use types::MspString;
-pub use types::MspVec;

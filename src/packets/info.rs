@@ -1,8 +1,7 @@
+use crate::CapacityError;
 use crate::MspDecodeError;
 use crate::MspEncodeError;
 use crate::MspPayload;
-use crate::MspString;
-use crate::MspVec;
 use crate::codec::PayloadReader;
 use crate::codec::PayloadWriter;
 use crate::commands::MSP_API_VERSION;
@@ -142,10 +141,27 @@ impl TryFrom<&[u8]> for MspFcVersion {
 }
 
 /// Craft name payload for `MSP_NAME` (`0x0A`) responses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct MspName {
-    pub name: MspString<MAX_CRAFT_NAME_LEN>,
+    name: heapless::String<MAX_CRAFT_NAME_LEN, u8>,
+}
+
+impl MspName {
+    /// Copies a craft name into an owned response.
+    ///
+    /// # Errors
+    ///
+    /// Returns a capacity error if the name exceeds MAX_CRAFT_NAME_LEN bytes.
+    pub fn new(name: &str) -> Result<Self, CapacityError> {
+        copy_craft_name(name).map(|name| Self { name })
+    }
+
+    /// Returns the craft name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        self.name.as_str()
+    }
 }
 
 impl MspPayload for MspName {
@@ -157,10 +173,7 @@ impl MspPayload for MspName {
     }
 
     fn from_bytes(data: &[u8]) -> Result<Self, MspDecodeError> {
-        let name = MspString::from_utf8(data).ok_or(MspDecodeError::InvalidPayload {
-            command_id: Self::COMMAND_ID,
-        })?;
-        Ok(Self { name })
+        decode_craft_name(Self::COMMAND_ID, data).map(|name| Self { name })
     }
 
     fn to_bytes(&self, buffer: &mut [u8]) -> Result<usize, MspEncodeError> {
@@ -179,10 +192,27 @@ impl TryFrom<&[u8]> for MspName {
 }
 
 /// Craft name setter request payload for `MSP_SET_NAME` (`0x0B`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct MspSetName {
-    pub name: MspString<MAX_CRAFT_NAME_LEN>,
+    name: heapless::String<MAX_CRAFT_NAME_LEN, u8>,
+}
+
+impl MspSetName {
+    /// Copies a craft name into an owned request.
+    ///
+    /// # Errors
+    ///
+    /// Returns a capacity error if the name exceeds MAX_CRAFT_NAME_LEN bytes.
+    pub fn new(name: &str) -> Result<Self, CapacityError> {
+        copy_craft_name(name).map(|name| Self { name })
+    }
+
+    /// Returns the requested craft name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        self.name.as_str()
+    }
 }
 
 impl MspPayload for MspSetName {
@@ -194,10 +224,7 @@ impl MspPayload for MspSetName {
     }
 
     fn from_bytes(data: &[u8]) -> Result<Self, MspDecodeError> {
-        let name = MspString::from_utf8(data).ok_or(MspDecodeError::InvalidPayload {
-            command_id: Self::COMMAND_ID,
-        })?;
-        Ok(Self { name })
+        decode_craft_name(Self::COMMAND_ID, data).map(|name| Self { name })
     }
 
     fn to_bytes(&self, buffer: &mut [u8]) -> Result<usize, MspEncodeError> {
@@ -213,6 +240,24 @@ impl TryFrom<&[u8]> for MspSetName {
     fn try_from(payload: &[u8]) -> Result<Self, Self::Error> {
         Self::from_bytes(payload)
     }
+}
+
+fn copy_craft_name(name: &str) -> Result<heapless::String<MAX_CRAFT_NAME_LEN, u8>, CapacityError> {
+    let mut stored = heapless::String::new();
+    stored.push_str(name).map_err(|_| CapacityError {
+        capacity: MAX_CRAFT_NAME_LEN,
+        requested: name.len(),
+    })?;
+    Ok(stored)
+}
+
+fn decode_craft_name(
+    command_id: u16,
+    data: &[u8],
+) -> Result<heapless::String<MAX_CRAFT_NAME_LEN, u8>, MspDecodeError> {
+    let invalid = MspDecodeError::InvalidPayload { command_id };
+    let name = core::str::from_utf8(data).map_err(|_| invalid)?;
+    copy_craft_name(name).map_err(|_| invalid)
 }
 
 /// Cumulative trailing fields appended to [`MspStatusExtended`] in newer Betaflight releases.
@@ -290,12 +335,12 @@ impl MspStatusTail {
 }
 
 /// Optional trailing fields appended to `MSP_STATUS` in modern Betaflight API revisions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct MspStatusExtended {
     pub average_system_load_percent: u16,
     pub gyro_cycle_time: u16,
-    pub flight_mode_flags_ext: MspVec<u8, MAX_FLIGHT_MODE_EXT_BYTES>,
+    flight_mode_flags_ext: heapless::Vec<u8, MAX_FLIGHT_MODE_EXT_BYTES, u8>,
     pub arming_disable_flags_count: u8,
     pub arming_disable_flags: u32,
     pub config_state_flags: u8,
@@ -303,6 +348,27 @@ pub struct MspStatusExtended {
 }
 
 impl MspStatusExtended {
+    /// Returns the flight mode flag bytes following the first 32 bits.
+    #[must_use]
+    pub fn flight_mode_flags_ext(&self) -> &[u8] {
+        self.flight_mode_flags_ext.as_slice()
+    }
+
+    /// Replaces the flight mode flag bytes following the first 32 bits.
+    ///
+    /// # Errors
+    ///
+    /// Returns a capacity error if the input exceeds MAX_FLIGHT_MODE_EXT_BYTES.
+    /// On error, the previous flag bytes are preserved.
+    pub fn set_flight_mode_flags_ext(&mut self, flags: &[u8]) -> Result<(), CapacityError> {
+        self.flight_mode_flags_ext =
+            heapless::Vec::from_slice(flags).map_err(|_| CapacityError {
+                capacity: MAX_FLIGHT_MODE_EXT_BYTES,
+                requested: flags.len(),
+            })?;
+        Ok(())
+    }
+
     /// Returns the signed CPU core temperature in °C, if present (`API >= 1.46`).
     #[must_use]
     pub const fn core_temp_celsius(&self) -> Option<i16> {
@@ -336,7 +402,7 @@ impl MspStatusExtended {
 /// Supports both the classic 11-byte MultiWii/Cleanflight prefix and the modern
 /// Betaflight extended status fields (variable flight mode bitmask, arming disable flags,
 /// CPU temperature, and profile counts).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct MspStatus {
     pub cycle_time_us: u16,
@@ -373,10 +439,11 @@ impl MspPayload for MspStatus {
             let gyro_cycle_time = reader.read_u16()?;
             let ext_len = usize::from(reader.read_u8()? & 0x0F);
             let ext_bytes = reader.read_bytes(ext_len)?;
-            let flight_mode_flags_ext =
-                MspVec::from_slice(ext_bytes).map_err(|_| MspDecodeError::InvalidPayload {
+            let flight_mode_flags_ext = heapless::Vec::from_slice(ext_bytes).map_err(|_| {
+                MspDecodeError::InvalidPayload {
                     command_id: Self::COMMAND_ID,
-                })?;
+                }
+            })?;
             let arming_disable_flags_count = reader.read_u8()?;
             let arming_disable_flags = reader.read_u32()?;
             let config_state_flags = reader.read_u8()?;
@@ -440,9 +507,9 @@ impl MspPayload for MspStatus {
         if let Some(ext) = &self.extended {
             writer.write_u16(ext.average_system_load_percent)?;
             writer.write_u16(ext.gyro_cycle_time)?;
-            let ext_len = u8::try_from(ext.flight_mode_flags_ext.len()).unwrap_or(0);
-            writer.write_u8(ext_len)?;
-            writer.write_bytes(ext.flight_mode_flags_ext.as_slice())?;
+            let flags = ext.flight_mode_flags_ext();
+            writer.write_u8(flags.len() as u8)?;
+            writer.write_bytes(flags)?;
             writer.write_u8(ext.arming_disable_flags_count)?;
             writer.write_u32(ext.arming_disable_flags)?;
             writer.write_u8(ext.config_state_flags)?;

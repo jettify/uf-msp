@@ -47,7 +47,7 @@ use crate::write_raw_frame_to_buffer;
 use crate::write_request_to_buffer;
 
 /// Supported MSP requests, responses, and setter acknowledgments.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
 pub enum MspMessage {
@@ -153,7 +153,7 @@ impl MspMessage {
 /// An owned decoded packet, independent of the parser and its input bytes.
 ///
 /// Wire bytes, checksums, and ignored trailing payload bytes are not retained.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct MspPacket {
     pub version: MspVersion,
@@ -295,7 +295,7 @@ fn decode_inout_command<Req: MspPayload, Resp: MspPayload>(
 }
 
 /// Decodes a parameterless action trigger: empty `<` request, empty `>` ACK response.
-const fn decode_action_command(
+fn decode_action_command(
     command_id: u16,
     direction: MspDirection,
     request: MspMessage,

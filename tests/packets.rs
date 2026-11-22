@@ -110,13 +110,14 @@ fn responses_and_requests_across_formats_and_every_split() {
             for (direction, message, payload) in
                 [(b'>', response, payload.as_slice()), (b'<', request, &[])]
             {
-                let bytes = wire(version, direction, message.command_id(), payload);
+                let command_id = message.command_id();
+                let bytes = wire(version, direction, command_id, payload);
                 let expected = MspPacket {
                     version,
                     flags: if version == MspVersion::V1 { 0 } else { 0xa5 },
                     message,
                 };
-                assert_eq!(expected.command_id(), message.command_id());
+                assert_eq!(expected.command_id(), command_id);
                 assert_eq!(
                     expected.direction(),
                     if direction == b'<' {
@@ -126,8 +127,8 @@ fn responses_and_requests_across_formats_and_every_split() {
                     }
                 );
                 assert_eq!(
-                    MspPacket::try_from(MspFrame::try_from(bytes.as_slice()).unwrap()),
-                    Ok(expected)
+                    MspPacket::try_from(MspFrame::try_from(bytes.as_slice()).unwrap()).as_ref(),
+                    Ok(&expected)
                 );
                 let mut encoded = vec![0xee_u8; bytes.len() + 4];
                 assert_eq!(expected.to_bytes(&mut encoded), Ok(bytes.len()));
@@ -151,7 +152,7 @@ fn responses_and_requests_across_formats_and_every_split() {
                         packets.extend(parser.packets(&mut input).map(Result::unwrap));
                         assert!(input.is_empty());
                     }
-                    assert_eq!(packets, [expected]);
+                    assert_eq!(packets, core::slice::from_ref(&expected));
                 }
                 // Every byte can also arrive in its own transport chunk.
                 let mut parser = MspParser::<64>::new();
@@ -181,7 +182,8 @@ fn extra_payload_is_ignored_but_still_checksummed() {
                 for chunk in [&bytes[..split], &bytes[split..]] {
                     packets.extend(parser.packets(&mut &chunk[..]));
                 }
-                assert_eq!(packets, [Ok(packet)]);
+                assert_eq!(packets.len(), 1);
+                assert_eq!(packets[0].as_ref(), Ok(&packet));
             }
             let mut corrupt = bytes.clone();
             // Last payload byte, before native CRC or outer XOR.
@@ -312,7 +314,10 @@ fn oversized_split_frames_follow_existing_spill_rules() {
         tail.extend_from_slice(&good);
         let packets: Vec<_> = parser.packets(&mut tail.as_slice()).collect();
         assert_eq!(packets.len(), 1);
-        assert_eq!(packets[0].unwrap().message, MspMessage::AltitudeRequest);
+        assert_eq!(
+            packets[0].as_ref().unwrap().message,
+            MspMessage::AltitudeRequest
+        );
     }
 }
 
@@ -707,8 +712,6 @@ fn public_types_implement_defmt_format() {
     assert_defmt_format::<MspDecodeError>();
     assert_defmt_format::<MspEncodeError>();
     assert_defmt_format::<uf_msp::CapacityError>();
-    assert_defmt_format::<uf_msp::MspVec<u16, 18>>();
-    assert_defmt_format::<uf_msp::MspString<16>>();
     assert_defmt_format::<uf_msp::MspApiVersion>();
     assert_defmt_format::<uf_msp::MspFcVariant>();
     assert_defmt_format::<uf_msp::MspFcVersion>();
@@ -724,57 +727,63 @@ fn public_types_implement_defmt_format() {
 }
 
 #[test]
-fn fixed_containers_and_packet_stack_footprint() {
-    use std::error::Error;
-    use uf_msp::CapacityError;
-    use uf_msp::MspString;
-    use uf_msp::MspVec;
+fn variable_payloads_accept_native_views_up_to_their_capacity() {
+    use uf_msp::{
+        CapacityError, MAX_CRAFT_NAME_LEN, MAX_FLIGHT_MODE_EXT_BYTES, MAX_RC_CHANNELS, MspName,
+        MspRc, MspSetName, MspSetRawRc, MspStatusExtended,
+    };
 
-    let mut vec = MspVec::<u16, 4>::new();
-    assert!(vec.is_empty());
-    assert_eq!(vec.capacity(), 4);
-    assert_eq!(vec.len(), 0);
-    vec.push(1000).unwrap();
-    vec.push(1500).unwrap();
-    assert_eq!(vec.as_slice(), &[1000, 1500]);
-    assert_eq!(&*vec, &[1000, 1500]);
-    vec.as_mut_slice()[1] = 2000;
-    assert_eq!(vec, MspVec::from_slice(&[1000, 2000]).unwrap());
-
+    let name = "é".repeat(MAX_CRAFT_NAME_LEN / 2);
+    let long_name = name.clone() + "x";
+    let name_error = CapacityError {
+        capacity: MAX_CRAFT_NAME_LEN,
+        requested: MAX_CRAFT_NAME_LEN + 1,
+    };
+    assert_eq!(MspName::new("").unwrap().name(), "");
+    assert_eq!(MspSetName::new("").unwrap().name(), "");
+    assert_eq!(MspName::new(&name).unwrap().name(), name);
+    assert_eq!(MspSetName::new(&name).unwrap().name(), name);
+    assert_eq!(MspName::from_bytes(name.as_bytes()).unwrap().name(), name);
     assert_eq!(
-        MspVec::<u16, 4>::try_from([1_u16, 2, 3, 4, 5].as_slice()),
+        MspSetName::from_bytes(name.as_bytes()).unwrap().name(),
+        name
+    );
+    assert_eq!(MspName::new(&long_name), Err(name_error));
+    assert_eq!(MspSetName::new(&long_name), Err(name_error));
+
+    let channels = [1500; MAX_RC_CHANNELS];
+    let long_channels = [1500; MAX_RC_CHANNELS + 1];
+    let channel_error = CapacityError {
+        capacity: MAX_RC_CHANNELS,
+        requested: MAX_RC_CHANNELS + 1,
+    };
+    assert!(MspRc::new(&[]).unwrap().channels().is_empty());
+    assert!(MspSetRawRc::new(&[]).unwrap().channels().is_empty());
+    assert_eq!(MspRc::new(&channels).unwrap().channels(), &channels);
+    assert_eq!(MspSetRawRc::new(&channels).unwrap().channels(), &channels);
+    assert_eq!(MspRc::new(&long_channels), Err(channel_error));
+    assert_eq!(MspSetRawRc::new(&long_channels), Err(channel_error));
+
+    let mut extended = MspStatusExtended::default();
+    let flags = [0x5a; MAX_FLIGHT_MODE_EXT_BYTES];
+    let long_flags = [0xff; MAX_FLIGHT_MODE_EXT_BYTES + 1];
+    assert!(extended.flight_mode_flags_ext().is_empty());
+    extended.set_flight_mode_flags_ext(&flags).unwrap();
+    assert_eq!(extended.flight_mode_flags_ext(), &flags);
+    assert_eq!(
+        extended.set_flight_mode_flags_ext(&long_flags),
         Err(CapacityError {
-            capacity: 4,
-            requested: 5,
+            capacity: MAX_FLIGHT_MODE_EXT_BYTES,
+            requested: MAX_FLIGHT_MODE_EXT_BYTES + 1,
         })
     );
-    vec.clear();
-    assert!(vec.is_empty());
+    assert_eq!(extended.flight_mode_flags_ext(), &flags);
+    extended.set_flight_mode_flags_ext(&[]).unwrap();
+    assert!(extended.flight_mode_flags_ext().is_empty());
+}
 
-    let name = MspString::<16>::from_str("uflight-quad").unwrap();
-    assert_eq!(name.len(), 12);
-    assert!(!name.is_empty());
-    assert_eq!(name.capacity(), 16);
-    assert_eq!(name.as_str(), "uflight-quad");
-    assert_eq!(&*name, "uflight-quad");
-    assert_eq!(name.to_string(), "uflight-quad");
-    assert_eq!(MspString::<16>::from_utf8(b"uflight-quad"), Some(name));
-    assert_eq!(MspString::<16>::from_utf8(&[0xff, 0xfe]), None);
-
-    let err = MspString::<4>::try_from("too-long").unwrap_err();
-    assert_eq!(
-        err,
-        CapacityError {
-            capacity: 4,
-            requested: 8,
-        }
-    );
-    assert_eq!(
-        err.to_string(),
-        "MSP fixed container capacity exceeded: capacity 4, requested 8"
-    );
-    assert!(err.source().is_none());
-
+#[test]
+fn owned_packet_stack_footprint() {
     // Guard embedded stack footprint: owned packets must stay compact (<= 64 bytes).
     assert!(
         core::mem::size_of::<MspMessage>() <= 64,
@@ -802,8 +811,6 @@ fn archetype_packets_roundtrip_across_all_versions_and_directions() {
     use uf_msp::MspStatus;
     use uf_msp::MspStatusExtended;
     use uf_msp::MspStatusTail;
-    use uf_msp::MspString;
-    use uf_msp::MspVec;
     use uf_msp::commands::*;
 
     let status_legacy = MspStatus {
@@ -814,58 +821,50 @@ fn archetype_packets_roundtrip_across_all_versions_and_directions() {
         current_pid_profile_index: 1,
         extended: None,
     };
-    // Betaflight 4.5.2 (2-byte signed core temperature without control_rate_profile_count)
+    // Betaflight 4.5.2 carries a signed core temperature.
+    let mut extended_bf45 = MspStatusExtended::default();
+    extended_bf45.average_system_load_percent = 30;
+    extended_bf45.arming_disable_flags_count = 28;
+    extended_bf45.tail = Some(MspStatusTail::CoreTemp {
+        core_temp_celsius: -5,
+    });
+    assert_eq!(extended_bf45.core_temp_celsius(), Some(-5));
+    assert_eq!(extended_bf45.control_rate_profile_count(), None);
+    assert_eq!(extended_bf45.battery_profile(), None);
+
     let status_bf45 = MspStatus {
         cycle_time_us: 125,
         i2c_error_count: 0,
         sensors: 0x27,
         flight_mode_flags: 0x0000_0003,
         current_pid_profile_index: 0,
-        extended: Some(MspStatusExtended {
-            average_system_load_percent: 30,
-            gyro_cycle_time: 0,
-            flight_mode_flags_ext: MspVec::new(),
-            arming_disable_flags_count: 28,
-            arming_disable_flags: 0,
-            config_state_flags: 0,
-            tail: Some(MspStatusTail::CoreTemp {
-                core_temp_celsius: -5,
-            }),
-        }),
+        extended: Some(extended_bf45),
     };
+
+    let mut extended = MspStatusExtended::default();
+    extended.set_flight_mode_flags_ext(&[0xaa, 0xbb]).unwrap();
+    extended.average_system_load_percent = 42;
+    extended.arming_disable_flags_count = 28;
+    extended.arming_disable_flags = 0x0010_0004;
+    extended.config_state_flags = 1;
+    extended.tail = Some(MspStatusTail::BatteryProfile {
+        core_temp_celsius: 55,
+        control_rate_profile_count: 4,
+        battery_profile_count: 3,
+        current_battery_profile_index: 1,
+    });
+    assert_eq!(extended.core_temp_celsius(), Some(55));
+    assert_eq!(extended.control_rate_profile_count(), Some(4));
+    assert_eq!(extended.battery_profile(), Some((3, 1)));
+
     let status_ext = MspStatus {
         cycle_time_us: 125,
         i2c_error_count: 2,
         sensors: 0x2f,
         flight_mode_flags: 0x1234_5678,
         current_pid_profile_index: 0,
-        extended: Some(MspStatusExtended {
-            average_system_load_percent: 42,
-            gyro_cycle_time: 0,
-            flight_mode_flags_ext: MspVec::from_slice(&[0xaa, 0xbb]).unwrap(),
-            arming_disable_flags_count: 28,
-            arming_disable_flags: 0x0010_0004,
-            config_state_flags: 1,
-            tail: Some(MspStatusTail::BatteryProfile {
-                core_temp_celsius: 55,
-                control_rate_profile_count: 4,
-                battery_profile_count: 3,
-                current_battery_profile_index: 1,
-            }),
-        }),
+        extended: Some(extended),
     };
-    assert_eq!(status_bf45.extended.unwrap().core_temp_celsius(), Some(-5));
-    assert_eq!(
-        status_bf45.extended.unwrap().control_rate_profile_count(),
-        None
-    );
-    assert_eq!(status_bf45.extended.unwrap().battery_profile(), None);
-    assert_eq!(status_ext.extended.unwrap().core_temp_celsius(), Some(55));
-    assert_eq!(
-        status_ext.extended.unwrap().control_rate_profile_count(),
-        Some(4)
-    );
-    assert_eq!(status_ext.extended.unwrap().battery_profile(), Some((3, 1)));
 
     let cases: &[(MspMessage, Vec<u8>)] = &[
         // 1. Out Fixed & Optional Trailing Telemetry
@@ -915,16 +914,12 @@ fn archetype_packets_roundtrip_across_all_versions_and_directions() {
         // 2. Out Variable-Length Array & String
         (MspMessage::NameRequest, vec![]),
         (
-            MspMessage::Name(MspName {
-                name: MspString::from_str("uflight").unwrap(),
-            }),
+            MspMessage::Name(MspName::new("uflight").unwrap()),
             b"uflight".to_vec(),
         ),
         (MspMessage::RcRequest, vec![]),
         (
-            MspMessage::Rc(MspRc {
-                channels: MspVec::from_slice(&[1500, 1500, 1000, 1500]).unwrap(),
-            }),
+            MspMessage::Rc(MspRc::new(&[1500, 1500, 1000, 1500]).unwrap()),
             [1500_u16, 1500, 1000, 1500]
                 .into_iter()
                 .flat_map(u16::to_le_bytes)
@@ -932,16 +927,12 @@ fn archetype_packets_roundtrip_across_all_versions_and_directions() {
         ),
         // 3. In Setter & Action Trigger (`<` Request with payload/empty, `>` empty ACK)
         (
-            MspMessage::SetName(MspSetName {
-                name: MspString::from_str("race-quad").unwrap(),
-            }),
+            MspMessage::SetName(MspSetName::new("race-quad").unwrap()),
             b"race-quad".to_vec(),
         ),
         (MspMessage::SetNameResponse, vec![]),
         (
-            MspMessage::SetRawRc(MspSetRawRc {
-                channels: MspVec::from_slice(&[1000, 1200, 1400, 1600, 1800, 2000]).unwrap(),
-            }),
+            MspMessage::SetRawRc(MspSetRawRc::new(&[1000, 1200, 1400, 1600, 1800, 2000]).unwrap()),
             [1000_u16, 1200, 1400, 1600, 1800, 2000]
                 .into_iter()
                 .flat_map(u16::to_le_bytes)
@@ -988,7 +979,7 @@ fn archetype_packets_roundtrip_across_all_versions_and_directions() {
             let packet = MspPacket {
                 version,
                 flags: if version == MspVersion::V1 { 0 } else { 0xa5 },
-                message: *message,
+                message: message.clone(),
             };
 
             let mut buf = vec![0u8; expected_wire.len()];
@@ -996,7 +987,7 @@ fn archetype_packets_roundtrip_across_all_versions_and_directions() {
             assert_eq!(buf, expected_wire);
 
             let frame = MspFrame::try_from(buf.as_slice()).unwrap();
-            assert_eq!(MspPacket::try_from(frame), Ok(packet));
+            assert_eq!(MspPacket::try_from(frame).as_ref(), Ok(&packet));
 
             // Also verify streaming parser across chunk splits
             for split in [0, 1, expected_wire.len() / 2, expected_wire.len()] {
@@ -1006,7 +997,7 @@ fn archetype_packets_roundtrip_across_all_versions_and_directions() {
                     let mut input = chunk;
                     decoded.extend(parser.packets(&mut input).map(Result::unwrap));
                 }
-                assert_eq!(decoded, [packet]);
+                assert_eq!(decoded, core::slice::from_ref(&packet));
             }
         }
     }
