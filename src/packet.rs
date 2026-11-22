@@ -1,7 +1,6 @@
 use crate::MspDirection;
 use crate::MspFrame;
 use crate::MspParser;
-use crate::MspParserError;
 use crate::MspVersion;
 use crate::commands::MSP_ALTITUDE;
 use crate::commands::MSP_ATTITUDE;
@@ -325,44 +324,6 @@ impl TryFrom<MspFrame<'_>> for MspPacket {
     }
 }
 
-/// A framing parser failure or a recoverable packet decoding error.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum MspPacketError {
-    Parser(MspParserError),
-    Decode(MspDecodeError),
-}
-
-impl From<MspParserError> for MspPacketError {
-    fn from(error: MspParserError) -> Self {
-        Self::Parser(error)
-    }
-}
-
-impl From<MspDecodeError> for MspPacketError {
-    fn from(error: MspDecodeError) -> Self {
-        Self::Decode(error)
-    }
-}
-
-impl core::fmt::Display for MspPacketError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Parser(error) => error.fmt(f),
-            Self::Decode(error) => error.fmt(f),
-        }
-    }
-}
-
-impl core::error::Error for MspPacketError {
-    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-        Some(match self {
-            Self::Parser(error) => error,
-            Self::Decode(error) => error,
-        })
-    }
-}
-
 impl<const N: usize> MspParser<N> {
     /// Consumes the next validated frame and decodes it into an owned packet.
     ///
@@ -371,16 +332,14 @@ impl<const N: usize> MspParser<N> {
     ///
     /// # Errors
     ///
-    /// Decode errors consume one frame and allow parsing to continue. Internal
-    /// parser errors require resetting the parser before reuse.
-    pub fn next_packet(&mut self, input: &mut &[u8]) -> Result<Option<MspPacket>, MspPacketError> {
-        Ok(self.next(input)?.map(MspPacket::try_from).transpose()?)
+    /// Decode errors consume one frame and allow parsing to continue.
+    pub fn next_packet(&mut self, input: &mut &[u8]) -> Result<Option<MspPacket>, MspDecodeError> {
+        self.next(input).map(MspPacket::try_from).transpose()
     }
 
     /// Iterates over owned packets, advancing the caller's input cursor.
     ///
-    /// Decode errors are yielded and iteration continues. An internal parser
-    /// error is yielded once and terminates the iterator. Incomplete input ends
+    /// Decode errors are yielded and iteration continues. Incomplete input ends
     /// this iterator; create another with the next chunk to continue parsing.
     /// Dropping early leaves the cursor at the first unconsumed byte.
     pub fn packets<'a, 'input>(
@@ -390,7 +349,6 @@ impl<const N: usize> MspParser<N> {
         MspPackets {
             parser: self,
             input,
-            finished: false,
         }
     }
 }
@@ -400,7 +358,6 @@ impl<const N: usize> MspParser<N> {
 pub struct MspPackets<'a, 'input, const N: usize> {
     parser: &'a mut MspParser<N>,
     input: &'a mut &'input [u8],
-    finished: bool,
 }
 
 impl<const N: usize> core::fmt::Debug for MspPackets<'_, '_, N> {
@@ -408,31 +365,15 @@ impl<const N: usize> core::fmt::Debug for MspPackets<'_, '_, N> {
         f.debug_struct("MspPackets")
             .field("parser", &self.parser)
             .field("remaining_len", &self.input.len())
-            .field("finished", &self.finished)
             .finish()
     }
 }
 
 impl<const N: usize> Iterator for MspPackets<'_, '_, N> {
-    type Item = Result<MspPacket, MspPacketError>;
+    type Item = Result<MspPacket, MspDecodeError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.finished {
-            return None;
-        }
-        match self.parser.next_packet(self.input) {
-            Ok(Some(packet)) => Some(Ok(packet)),
-            Ok(None) => {
-                self.finished = true;
-                None
-            }
-            Err(error) => {
-                if matches!(error, MspPacketError::Parser(_)) {
-                    self.finished = true;
-                }
-                Some(Err(error))
-            }
-        }
+        self.parser.next_packet(self.input).transpose()
     }
 }
 

@@ -57,15 +57,7 @@ fn main() -> ExitCode {
         match port.read(buf.as_mut_slice()) {
             Ok(n) => {
                 let mut remaining = &buf[..n];
-                loop {
-                    let frame = match parser.next(&mut remaining) {
-                        Ok(Some(frame)) => frame,
-                        Ok(None) => break,
-                        Err(error) => {
-                            eprintln!("Parser error: {error}");
-                            return ExitCode::FAILURE;
-                        }
-                    };
+                while let Some(frame) = parser.next(&mut remaining) {
                     println!(
                         "{:?} {:?} command_id={} flags=0x{:02x} len={} payload={:02X?}",
                         frame.version(),

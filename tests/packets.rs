@@ -5,7 +5,6 @@ use uf_msp::MspDirection;
 use uf_msp::MspFrame;
 use uf_msp::MspMessage;
 use uf_msp::MspPacket;
-use uf_msp::MspPacketError;
 use uf_msp::MspParser;
 use uf_msp::MspRawImu;
 use uf_msp::MspVersion;
@@ -204,18 +203,14 @@ fn short_payloads_and_remote_errors_are_reported_and_consumed() {
             let mut expected = Vec::new();
             for length in 0..payload.len() {
                 stream.extend(wire(version, b'>', command_id, &payload[..length]));
-                expected.push(Err(MspPacketError::Decode(
-                    MspDecodeError::PayloadTooShort {
-                        command_id,
-                        required: payload.len(),
-                        actual: length,
-                    },
-                )));
+                expected.push(Err(MspDecodeError::PayloadTooShort {
+                    command_id,
+                    required: payload.len(),
+                    actual: length,
+                }));
             }
             stream.extend(wire(version, b'!', command_id, &[]));
-            expected.push(Err(MspPacketError::Decode(MspDecodeError::RemoteError {
-                command_id,
-            })));
+            expected.push(Err(MspDecodeError::RemoteError { command_id }));
             stream.extend(good);
             expected.push(Ok(MspPacket {
                 version,
@@ -244,9 +239,7 @@ fn unsupported_commands_take_precedence_and_iteration_continues() {
         for _ in 0..3 {
             assert_eq!(
                 packets.next(),
-                Some(Err(MspPacketError::Decode(
-                    MspDecodeError::UnsupportedCommand { command_id: 42 }
-                )))
+                Some(Err(MspDecodeError::UnsupportedCommand { command_id: 42 }))
             );
         }
         assert_eq!(
@@ -338,7 +331,7 @@ fn iterator_drains_buffered_frames_recovered_from_corrupt_envelope() {
 }
 
 #[test]
-fn errors_implement_display_and_source() {
+fn errors_implement_display_and_error_trait() {
     use std::error::Error;
     let errors = [
         (
@@ -360,21 +353,17 @@ fn errors_implement_display_and_source() {
     ];
     for (error, expected) in errors {
         assert_eq!(error.to_string(), expected);
-        let wrapped = MspPacketError::Decode(error);
-        assert_eq!(wrapped.to_string(), expected);
-        assert_eq!(wrapped.source().unwrap().to_string(), expected);
+        assert!(error.source().is_none());
     }
-    let error = MspPacketError::Parser(uf_msp::MspParserError::InvalidBufferState);
-    assert_eq!(error.source().unwrap().to_string(), error.to_string());
 }
 
 #[test]
-fn packet_errors_support_question_mark_in_manual_decoding() {
+fn manual_decoding_with_question_mark() {
     fn decode(
         parser: &mut MspParser<64>,
         input: &mut &[u8],
-    ) -> Result<Option<MspPacket>, MspPacketError> {
-        let Some(frame) = parser.next(input)? else {
+    ) -> Result<Option<MspPacket>, MspDecodeError> {
+        let Some(frame) = parser.next(input) else {
             return Ok(None);
         };
         Ok(Some(MspPacket::try_from(frame)?))
@@ -392,16 +381,11 @@ fn packet_errors_support_question_mark_in_manual_decoding() {
     let short = wire(MspVersion::V2, b'>', MSP_ATTITUDE, &[]);
     assert_eq!(
         decode(&mut parser, &mut short.as_slice()),
-        Err(MspPacketError::Decode(MspDecodeError::PayloadTooShort {
+        Err(MspDecodeError::PayloadTooShort {
             command_id: MSP_ATTITUDE,
             required: 6,
             actual: 0,
-        }))
-    );
-    let parser_error = uf_msp::MspParserError::InvalidBufferState;
-    assert_eq!(
-        MspPacketError::from(parser_error),
-        MspPacketError::Parser(parser_error)
+        })
     );
 }
 
@@ -476,7 +460,7 @@ fn packet_iterator_implements_debug() {
     assert_eq!(
         format!("{packets:?}"),
         format!(
-            "MspPackets {{ parser: MspParser {{ capacity: 32, start: 0, end: 0, buffered_len: 0, .. }}, remaining_len: {}, finished: false }}",
+            "MspPackets {{ parser: MspParser {{ capacity: 32, start: 0, end: 0, buffered_len: 0, .. }}, remaining_len: {} }}",
             bytes.len()
         )
     );
@@ -484,6 +468,6 @@ fn packet_iterator_implements_debug() {
     assert!(packets.next().is_none());
     assert_eq!(
         format!("{packets:?}"),
-        "MspPackets { parser: MspParser { capacity: 32, start: 0, end: 0, buffered_len: 0, .. }, remaining_len: 0, finished: true }"
+        "MspPackets { parser: MspParser { capacity: 32, start: 0, end: 0, buffered_len: 0, .. }, remaining_len: 0 }"
     );
 }

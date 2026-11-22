@@ -130,32 +130,6 @@ impl core::fmt::Display for MspFrameError {
 
 impl core::error::Error for MspFrameError {}
 
-/// An internal parser failure, distinct from recoverable malformed wire data.
-///
-/// Reset or replace the parser before continuing after an error. Input may have
-/// advanced before the error was reported.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum MspParserError {
-    /// Buffer positions or a requested frame range violate the parser invariant.
-    InvalidBufferState,
-    /// A requested append would exceed the spill buffer capacity.
-    BufferCapacityExceeded,
-}
-
-impl core::fmt::Display for MspParserError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::InvalidBufferState => f.write_str("invalid MSP parser buffer state"),
-            Self::BufferCapacityExceeded => {
-                f.write_str("MSP parser spill buffer capacity exceeded")
-            }
-        }
-    }
-}
-
-impl core::error::Error for MspParserError {}
-
 /// A complete MSP frame with a valid header and checksum(s).
 ///
 /// The borrowed bytes include the header, payload, and checksum. Construction is
@@ -533,16 +507,14 @@ impl<const N: usize> MspParser<N> {
 
     /// Returns the currently unconsumed bytes in the spill buffer.
     #[inline]
-    fn buffered(&self) -> Result<&[u8], MspParserError> {
-        self.buffer
-            .get(self.start..self.end)
-            .ok_or(MspParserError::InvalidBufferState)
+    fn buffered(&self) -> &[u8] {
+        self.buffer.get(self.start..self.end).unwrap_or(&[])
     }
 
     /// Returns `true` if there are unconsumed bytes in the spill buffer.
     #[inline]
     fn has_buffered(&self) -> bool {
-        self.start < self.end
+        self.start < self.end && self.end <= N
     }
 
     /// Returns the byte offset to the next `$` preamble after the first byte,
@@ -570,16 +542,15 @@ impl<const N: usize> MspParser<N> {
 
     /// Advances the spill buffer to the next possible preamble.
     #[inline]
-    fn skip_buffered_candidate(&mut self) -> Result<(), MspParserError> {
-        let offset = Self::next_candidate_offset(self.buffered()?);
-        self.start += offset;
-        Ok(())
+    fn skip_buffered_candidate(&mut self) {
+        let offset = Self::next_candidate_offset(self.buffered());
+        self.start = self.start.saturating_add(offset).min(self.end);
     }
 
     /// Compacts the spill buffer so remaining bytes begin at index 0.
     #[inline]
     fn compact(&mut self) {
-        if self.start > 0 {
+        if self.start > 0 && self.start <= self.end && self.end <= N {
             self.buffer.copy_within(self.start..self.end, 0);
             self.end -= self.start;
             self.start = 0;
@@ -588,89 +559,67 @@ impl<const N: usize> MspParser<N> {
 
     /// Borrows an inspected frame from the spill buffer and consumes its bytes.
     #[inline]
-    fn consume_buffered_frame(
-        &mut self,
-        frame: ValidatedFrameMetadata,
-    ) -> Result<MspFrame<'_>, MspParserError> {
-        let end = self
-            .start
-            .checked_add(frame.len)
-            .ok_or(MspParserError::InvalidBufferState)?;
+    fn consume_buffered_frame(&mut self, frame: ValidatedFrameMetadata) -> Option<MspFrame<'_>> {
+        let end = self.start.checked_add(frame.len)?;
         if end > self.end {
-            return Err(MspParserError::InvalidBufferState);
+            self.reset();
+            return None;
         }
-        let bytes = self
-            .buffer
-            .get(self.start..end)
-            .ok_or(MspParserError::InvalidBufferState)?;
-        let frame = frame
-            .into_frame(bytes)
-            .map_err(|_invalid_frame| MspParserError::InvalidBufferState)?;
+        let bytes = self.buffer.get(self.start..end)?;
+        let frame = frame.into_frame(bytes).ok()?;
         self.start = end;
-        Ok(frame)
+        Some(frame)
     }
 
     /// Copies up to `count` bytes from `input` into the spill buffer, advancing `input`.
     #[inline]
-    fn pull_from_input(&mut self, input: &mut &[u8], count: usize) -> Result<(), MspParserError> {
-        if self.start > self.end || self.end > N {
-            return Err(MspParserError::InvalidBufferState);
-        }
+    fn pull_from_input(&mut self, input: &mut &[u8], count: usize) {
         let take = count.min(input.len());
-        let end = self
-            .end
-            .checked_add(take)
-            .ok_or(MspParserError::BufferCapacityExceeded)?;
-        let dst = self
-            .buffer
-            .get_mut(self.end..end)
-            .ok_or(MspParserError::BufferCapacityExceeded)?;
+        let Some(end) = self.end.checked_add(take) else {
+            self.reset();
+            return;
+        };
+        let Some(dst) = self.buffer.get_mut(self.end..end) else {
+            self.reset();
+            return;
+        };
         let (head, tail) = input.split_at(take);
         dst.copy_from_slice(head);
         self.end = end;
         *input = tail;
-        Ok(())
     }
 
     /// Returns the next valid frame and advances `input` past consumed bytes.
     ///
-    /// Call repeatedly until `Ok(None)`, which consumes all input and retains any
+    /// Call repeatedly until `None`, which consumes all input and retains any
     /// incomplete candidate that fits the spill buffer. Empty input can drain
-    /// frames retained during recovery from a corrupt candidate.
+    /// frames retained during recovery from a corrupt candidate. Malformed wire
+    /// candidates are skipped without error.
     ///
     /// The result borrows either the input or the spill buffer. Finish using it
     /// before calling the parser again.
-    ///
-    /// # Errors
-    ///
-    /// Reports invalid internal buffer state or an impossible append. Malformed
-    /// wire candidates are skipped without returning an error. After an error,
-    /// reset or replace the parser; input may already have advanced.
-    pub fn next<'a, 'input: 'a>(
-        &'a mut self,
-        input: &mut &'input [u8],
-    ) -> Result<Option<MspFrame<'a>>, MspParserError> {
+    pub fn next<'a, 'input: 'a>(&'a mut self, input: &mut &'input [u8]) -> Option<MspFrame<'a>> {
         if self.start > self.end || self.end > N {
-            return Err(MspParserError::InvalidBufferState);
+            self.reset();
         }
         loop {
             // Process any data currently in the spill buffer.
             if self.has_buffered() {
-                match inspect_frame(self.buffered()?) {
-                    FrameInspection::Invalid(_) => self.skip_buffered_candidate()?,
+                match inspect_frame(self.buffered()) {
+                    FrameInspection::Invalid(_) => self.skip_buffered_candidate(),
                     FrameInspection::Complete(frame) => {
-                        return self.consume_buffered_frame(frame).map(Some);
+                        return self.consume_buffered_frame(frame);
                     }
                     FrameInspection::Incomplete(required) => {
                         if required > N {
                             // Candidate exceeds spill capacity; scan for the next preamble.
-                            self.skip_buffered_candidate()?;
+                            self.skip_buffered_candidate();
                             continue;
                         }
                         self.compact();
-                        self.pull_from_input(input, required - self.end)?;
+                        self.pull_from_input(input, required.saturating_sub(self.end));
                         if self.end < required {
-                            return Ok(None);
+                            return None;
                         }
                     }
                 }
@@ -680,23 +629,16 @@ impl<const N: usize> MspParser<N> {
             // Process input stream directly (zero-copy when contiguous).
             self.reset();
             if input.is_empty() {
-                return Ok(None);
+                return None;
             }
 
             match inspect_frame(input) {
                 FrameInspection::Invalid(_) => *input = Self::next_candidate(input),
                 FrameInspection::Complete(frame) => {
-                    let bytes = input
-                        .get(..frame.len)
-                        .ok_or(MspParserError::InvalidBufferState)?;
-                    let remaining = input
-                        .get(frame.len..)
-                        .ok_or(MspParserError::InvalidBufferState)?;
-                    let frame = frame
-                        .into_frame(bytes)
-                        .map_err(|_invalid_frame| MspParserError::InvalidBufferState)?;
+                    let (bytes, remaining) = input.split_at_checked(frame.len)?;
+                    let frame = frame.into_frame(bytes).ok()?;
                     *input = remaining;
-                    return Ok(Some(frame));
+                    return Some(frame);
                 }
                 FrameInspection::Incomplete(required) => {
                     if required > N {
@@ -705,8 +647,8 @@ impl<const N: usize> MspParser<N> {
                         continue;
                     }
                     // Spill partial candidate into internal buffer to await rest of frame.
-                    self.pull_from_input(input, input.len())?;
-                    return Ok(None);
+                    self.pull_from_input(input, input.len());
+                    return None;
                 }
             }
         }
@@ -850,7 +792,6 @@ mod tests {
                     MspParser::<9>::new()
                         .next(&mut bytes.as_slice())
                         .unwrap()
-                        .unwrap()
                         .as_bytes(),
                     bytes
                 );
@@ -859,18 +800,15 @@ mod tests {
                 }
                 for split in 0..bytes.len() {
                     let mut parser = MspParser::<300>::new();
-                    assert_eq!(parser.next(&mut &bytes[..split]), Ok(None));
-                    let f = parser.next(&mut &bytes[split..]).unwrap().unwrap();
+                    assert_eq!(parser.next(&mut &bytes[..split]), None);
+                    let f = parser.next(&mut &bytes[split..]).unwrap();
                     assert_eq!(f.as_bytes(), bytes);
                     assert_eq!(f.payload(), payload);
                 }
                 let mut parser = MspParser::<300>::new();
                 for (i, byte) in bytes.iter().enumerate() {
                     assert_eq!(
-                        parser
-                            .next(&mut core::slice::from_ref(byte))
-                            .unwrap()
-                            .is_some(),
+                        parser.next(&mut core::slice::from_ref(byte)).is_some(),
                         i + 1 == bytes.len()
                     );
                 }
@@ -917,15 +855,11 @@ mod tests {
             // short v1 frame in isolation. No extra input should be necessary.
             for split in 0..=header.len() {
                 let mut parser = MspParser::<32>::new();
-                assert_eq!(parser.next(&mut &header[..split]), Ok(None));
-                assert_eq!(parser.next(&mut &header[split..]), Ok(None));
-                assert!(parser.buffered().unwrap().is_empty());
+                assert_eq!(parser.next(&mut &header[..split]), None);
+                assert_eq!(parser.next(&mut &header[split..]), None);
+                assert!(parser.buffered().is_empty());
                 assert_eq!(
-                    parser
-                        .next(&mut probe.as_slice())
-                        .unwrap()
-                        .unwrap()
-                        .as_bytes(),
+                    parser.next(&mut probe.as_slice()).unwrap().as_bytes(),
                     probe
                 );
             }
@@ -982,7 +916,7 @@ mod tests {
             let mut actual = std::vec::Vec::new();
             for chunk in stream.chunks(chunk_size) {
                 let mut input = chunk;
-                while let Some(f) = parser.next(&mut input).unwrap() {
+                while let Some(f) = parser.next(&mut input) {
                     actual.push(f.as_bytes().to_vec());
                 }
             }
@@ -1013,39 +947,27 @@ mod tests {
         // Spill buffer of 14 bytes cannot hold the 12-byte header + payload, so the
         // partial candidate is skipped when the next frame arrives.
         let mut parser = MspParser::<14>::new();
-        assert_eq!(parser.next(&mut &bytes[..10]), Ok(None));
+        assert_eq!(parser.next(&mut &bytes[..10]), None);
         assert_eq!(
-            parser
-                .next(&mut probe.as_slice())
-                .unwrap()
-                .unwrap()
-                .as_bytes(),
+            parser.next(&mut probe.as_slice()).unwrap().as_bytes(),
             probe
         );
 
         // Explicit reset discards a buffered partial jumbo v2-over-v1 header.
         let mut parser = MspParser::<32>::new();
-        assert_eq!(parser.next(&mut &bytes[..10]), Ok(None));
+        assert_eq!(parser.next(&mut &bytes[..10]), None);
         parser.reset();
         assert_eq!(
-            parser
-                .next(&mut probe.as_slice())
-                .unwrap()
-                .unwrap()
-                .as_bytes(),
+            parser.next(&mut probe.as_slice()).unwrap().as_bytes(),
             probe
         );
 
         // Exact 16-byte capacity fits a 2-byte jumbo v2-over-v1 frame (`14 + 2 = 16`).
         let exact_bytes = v1_frame(b"hi", true, true);
         let mut parser = MspParser::<16>::new();
-        assert_eq!(parser.next(&mut &exact_bytes[..10]), Ok(None));
+        assert_eq!(parser.next(&mut &exact_bytes[..10]), None);
         assert_eq!(
-            parser
-                .next(&mut &exact_bytes[10..])
-                .unwrap()
-                .unwrap()
-                .payload(),
+            parser.next(&mut &exact_bytes[10..]).unwrap().payload(),
             b"hi"
         );
     }
@@ -1076,24 +998,13 @@ mod tests {
             let spill_ptr = parser.buffer.as_ptr();
             let mut first = &bytes[..split];
             if split == bytes.len() {
-                let result = parser
-                    .next(&mut first)
-                    .expect("valid parser state")
-                    .unwrap();
+                let result = parser.next(&mut first).unwrap();
                 assert_eq!(result.as_bytes().as_ptr(), bytes.as_ptr());
                 assert_eq!(result.as_bytes(), bytes);
             } else {
-                assert!(
-                    parser
-                        .next(&mut first)
-                        .expect("valid parser state")
-                        .is_none()
-                );
+                assert!(parser.next(&mut first).is_none());
                 let mut second = &bytes[split..];
-                let result = parser
-                    .next(&mut second)
-                    .expect("valid parser state")
-                    .unwrap();
+                let result = parser.next(&mut second).unwrap();
                 assert_eq!(result.as_bytes(), bytes);
                 assert_eq!(result.as_ref(), bytes);
                 assert_eq!(
@@ -1107,12 +1018,7 @@ mod tests {
                 assert_eq!(second, []);
             }
             assert_eq!(first, []);
-            assert!(
-                parser
-                    .next(&mut &[][..])
-                    .expect("valid parser state")
-                    .is_none()
-            );
+            assert!(parser.next(&mut &[][..]).is_none());
         }
     }
 
@@ -1122,7 +1028,7 @@ mod tests {
         let mut parser = MspParser::<14>::new();
         for (index, byte) in bytes.iter().enumerate() {
             let mut input = core::slice::from_ref(byte);
-            let result = parser.next(&mut input).expect("valid parser state");
+            let result = parser.next(&mut input);
             if index == bytes.len() - 1 {
                 assert_eq!(result.unwrap().as_bytes(), bytes);
             } else {
@@ -1141,40 +1047,18 @@ mod tests {
         let mut input = stream.as_slice();
         let mut parser = MspParser::<32>::default();
         assert_eq!(
-            parser
-                .next(&mut input)
-                .expect("valid parser state")
-                .unwrap()
-                .as_bytes()
-                .as_ptr(),
+            parser.next(&mut input).unwrap().as_bytes().as_ptr(),
             stream.as_ptr()
         );
         assert_eq!(input.len(), bytes.len() + 5);
         assert_eq!(
-            parser
-                .next(&mut input)
-                .expect("valid parser state")
-                .unwrap()
-                .as_bytes()
-                .as_ptr(),
+            parser.next(&mut input).unwrap().as_bytes().as_ptr(),
             stream[bytes.len()..].as_ptr()
         );
-        assert!(
-            parser
-                .next(&mut input)
-                .expect("valid parser state")
-                .is_none()
-        );
+        assert!(parser.next(&mut input).is_none());
         assert_eq!(input, []);
         let mut tail = &bytes[5..];
-        assert_eq!(
-            parser
-                .next(&mut tail)
-                .expect("valid parser state")
-                .unwrap()
-                .as_bytes(),
-            bytes
-        );
+        assert_eq!(parser.next(&mut tail).unwrap().as_bytes(), bytes);
         assert_eq!(tail, []);
     }
 
@@ -1182,31 +1066,14 @@ mod tests {
     fn spill_completion_leaves_next_frame_in_input() {
         let bytes = frame(b"hello");
         let mut parser = MspParser::<32>::new();
-        assert!(
-            parser
-                .next(&mut &bytes[..4])
-                .expect("valid parser state")
-                .is_none()
-        );
+        assert!(parser.next(&mut &bytes[..4]).is_none());
         let mut rest = bytes[4..].to_vec();
         rest.extend_from_slice(&bytes);
         let mut input = rest.as_slice();
-        assert_eq!(
-            parser
-                .next(&mut input)
-                .expect("valid parser state")
-                .unwrap()
-                .as_bytes(),
-            bytes
-        );
+        assert_eq!(parser.next(&mut input).unwrap().as_bytes(), bytes);
         assert_eq!(input, bytes);
         assert_eq!(
-            parser
-                .next(&mut input)
-                .expect("valid parser state")
-                .unwrap()
-                .as_bytes()
-                .as_ptr(),
+            parser.next(&mut input).unwrap().as_bytes().as_ptr(),
             rest[bytes.len() - 4..].as_ptr()
         );
     }
@@ -1218,11 +1085,7 @@ mod tests {
             bytes[2] = direction;
             let mut parser = MspParser::<9>::new();
             assert_eq!(
-                parser
-                    .next(&mut bytes.as_slice())
-                    .expect("valid parser state")
-                    .unwrap()
-                    .as_bytes(),
+                parser.next(&mut bytes.as_slice()).unwrap().as_bytes(),
                 bytes
             );
         }
@@ -1238,14 +1101,7 @@ mod tests {
         stream.extend_from_slice(&bytes);
         let mut parser = MspParser::<32>::new();
         let mut input = stream.as_slice();
-        assert_eq!(
-            parser
-                .next(&mut input)
-                .expect("valid parser state")
-                .unwrap()
-                .as_bytes(),
-            bytes
-        );
+        assert_eq!(parser.next(&mut input).unwrap().as_bytes(), bytes);
         assert_eq!(input, []);
     }
 
@@ -1267,12 +1123,12 @@ mod tests {
 
             for split in [0, V2_HEADER_LEN] {
                 let mut parser = MspParser::<128>::new();
-                assert_eq!(parser.next(&mut &outer[..split]), Ok(None));
+                assert_eq!(parser.next(&mut &outer[..split]), None);
                 let mut input = &outer[split..];
-                assert_eq!(parser.next(&mut input), Ok(None));
+                assert_eq!(parser.next(&mut input), None);
                 assert!(input.is_empty());
                 let mut tail = &inner[prefix_len + 1..];
-                assert_eq!(parser.next(&mut tail).unwrap().unwrap().as_bytes(), inner);
+                assert_eq!(parser.next(&mut tail).unwrap().as_bytes(), inner);
                 assert!(tail.is_empty());
             }
         }
@@ -1289,35 +1145,11 @@ mod tests {
         *outer.last_mut().unwrap() = u8::from(checksum == 0);
         for split in 0..outer.len() {
             let mut parser = MspParser::<32>::new();
-            assert!(
-                parser
-                    .next(&mut &outer[..split])
-                    .expect("valid parser state")
-                    .is_none()
-            );
+            assert!(parser.next(&mut &outer[..split]).is_none());
             let mut input = &outer[split..];
-            assert_eq!(
-                parser
-                    .next(&mut input)
-                    .expect("valid parser state")
-                    .unwrap()
-                    .as_bytes(),
-                inner
-            );
-            assert_eq!(
-                parser
-                    .next(&mut input)
-                    .expect("valid parser state")
-                    .unwrap()
-                    .as_bytes(),
-                inner
-            );
-            assert!(
-                parser
-                    .next(&mut input)
-                    .expect("valid parser state")
-                    .is_none()
-            );
+            assert_eq!(parser.next(&mut input).unwrap().as_bytes(), inner);
+            assert_eq!(parser.next(&mut input).unwrap().as_bytes(), inner);
+            assert!(parser.next(&mut input).is_none());
             assert_eq!(input, []);
         }
     }
@@ -1330,32 +1162,10 @@ mod tests {
         assert_ne!(*outer.last().unwrap(), inner[5]);
         *outer.last_mut().unwrap() = inner[5];
         let mut parser = MspParser::<32>::new();
-        assert!(
-            parser
-                .next(&mut &outer[..8])
-                .expect("valid parser state")
-                .is_none()
-        );
-        assert!(
-            parser
-                .next(&mut &outer[8..])
-                .expect("valid parser state")
-                .is_none()
-        );
-        assert!(
-            parser
-                .next(&mut &[][..])
-                .expect("valid parser state")
-                .is_none()
-        );
-        assert_eq!(
-            parser
-                .next(&mut &inner[6..])
-                .expect("valid parser state")
-                .unwrap()
-                .as_bytes(),
-            inner
-        );
+        assert!(parser.next(&mut &outer[..8]).is_none());
+        assert!(parser.next(&mut &outer[8..]).is_none());
+        assert!(parser.next(&mut &[][..]).is_none());
+        assert_eq!(parser.next(&mut &inner[6..]).unwrap().as_bytes(), inner);
     }
 
     #[test]
@@ -1363,10 +1173,7 @@ mod tests {
         let bytes = frame(&std::vec![0; usize::from(u16::MAX)]);
         let mut parser = MspParser::<9>::new();
         let mut input = bytes.as_slice();
-        let result = parser
-            .next(&mut input)
-            .expect("valid parser state")
-            .unwrap();
+        let result = parser.next(&mut input).unwrap();
         assert_eq!(result.as_bytes(), bytes);
         assert_eq!(result.as_bytes().as_ptr(), bytes.as_ptr());
         assert_eq!(input, []);
@@ -1378,23 +1185,11 @@ mod tests {
         let valid = frame(&[]);
         for split in 1..oversized.len() {
             let mut parser = MspParser::<9>::new();
-            assert!(
-                parser
-                    .next(&mut &oversized[..split])
-                    .expect("valid parser state")
-                    .is_none()
-            );
+            assert!(parser.next(&mut &oversized[..split]).is_none());
             let mut tail = oversized[split..].to_vec();
             tail.extend_from_slice(&valid);
             let mut input = tail.as_slice();
-            assert_eq!(
-                parser
-                    .next(&mut input)
-                    .expect("valid parser state")
-                    .unwrap()
-                    .as_bytes(),
-                valid
-            );
+            assert_eq!(parser.next(&mut input).unwrap().as_bytes(), valid);
             assert_eq!(input, []);
         }
     }
@@ -1406,14 +1201,7 @@ mod tests {
         stream.extend_from_slice(&valid);
         let mut parser = MspParser::<9>::new();
         let mut input = stream.as_slice();
-        assert_eq!(
-            parser
-                .next(&mut input)
-                .expect("valid parser state")
-                .unwrap()
-                .as_bytes(),
-            valid
-        );
+        assert_eq!(parser.next(&mut input).unwrap().as_bytes(), valid);
         assert_eq!(input, []);
     }
 
@@ -1421,25 +1209,11 @@ mod tests {
     fn reset_discards_partial_frame() {
         let bytes = frame(b"hello");
         let mut parser = MspParser::<32>::new();
-        assert!(
-            parser
-                .next(&mut &bytes[..8])
-                .expect("valid parser state")
-                .is_none()
-        );
+        assert!(parser.next(&mut &bytes[..8]).is_none());
         parser.reset();
-        assert!(
-            parser
-                .next(&mut &bytes[8..])
-                .expect("valid parser state")
-                .is_none()
-        );
+        assert!(parser.next(&mut &bytes[8..]).is_none());
         assert_eq!(
-            parser
-                .next(&mut bytes.as_slice())
-                .expect("valid parser state")
-                .unwrap()
-                .as_bytes(),
+            parser.next(&mut bytes.as_slice()).unwrap().as_bytes(),
             bytes
         );
     }
@@ -1447,18 +1221,8 @@ mod tests {
     #[test]
     fn empty_input() {
         let mut parser = MspParser::<9>::new();
-        assert!(
-            parser
-                .next(&mut &[][..])
-                .expect("valid parser state")
-                .is_none()
-        );
-        assert!(
-            parser
-                .next(&mut &[][..])
-                .expect("valid parser state")
-                .is_none()
-        );
+        assert!(parser.next(&mut &[][..]).is_none());
+        assert!(parser.next(&mut &[][..]).is_none());
     }
 
     #[test]
@@ -1466,20 +1230,8 @@ mod tests {
         const PARSER: MspParser<9> = MspParser::new();
         let mut parser = PARSER;
         let bytes = frame(&[]);
-        assert!(
-            parser
-                .next(&mut &bytes[..8])
-                .expect("valid parser state")
-                .is_none()
-        );
-        assert_eq!(
-            parser
-                .next(&mut &bytes[8..])
-                .expect("valid parser state")
-                .unwrap()
-                .as_bytes(),
-            bytes
-        );
+        assert!(parser.next(&mut &bytes[..8]).is_none());
+        assert_eq!(parser.next(&mut &bytes[8..]).unwrap().as_bytes(), bytes);
     }
 
     #[test]
@@ -1529,11 +1281,11 @@ mod tests {
                     let spill_payload_ptr = parser.buffer[V2_HEADER_LEN..].as_ptr();
                     let mut first = &bytes[..split];
                     let parsed = if split == bytes.len() {
-                        parser.next(&mut first).unwrap().unwrap()
+                        parser.next(&mut first).unwrap()
                     } else {
-                        assert_eq!(parser.next(&mut first), Ok(None));
+                        assert_eq!(parser.next(&mut first), None);
                         let mut rest = &bytes[split..];
-                        let parsed = parser.next(&mut rest).unwrap().unwrap();
+                        let parsed = parser.next(&mut rest).unwrap();
                         assert_eq!(rest, []);
                         parsed
                     };
@@ -1630,65 +1382,34 @@ mod tests {
     }
 
     #[test]
-    fn invalid_buffer_positions_are_reported_and_reset_recovers() {
+    fn invalid_buffer_positions_auto_reset_without_panicking() {
         let bytes = frame(&[]);
         for (start, end) in [(1, 0), (0, 10), (10, 10), (usize::MAX, usize::MAX)] {
             let mut parser = MspParser::<9>::new();
             parser.start = start;
             parser.end = end;
             let mut input = bytes.as_slice();
-            assert_eq!(
-                parser.next(&mut input),
-                Err(MspParserError::InvalidBufferState)
-            );
-            assert_eq!(input, bytes);
-            parser.reset();
-            assert_eq!(parser.next(&mut input).unwrap().unwrap().as_bytes(), bytes);
-            assert_eq!(parser.next(&mut input), Ok(None));
+            assert_eq!(parser.next(&mut input).unwrap().as_bytes(), bytes);
+            assert_eq!(parser.next(&mut input), None);
         }
     }
 
     #[test]
-    fn packet_iterator_yields_internal_error_once_and_reset_recovers() {
-        let mut parser = MspParser::<9>::new();
-        parser.start = 1;
-        parser.end = 0;
-        let mut input = &[][..];
-        let mut packets = parser.packets(&mut input);
-        assert_eq!(
-            packets.next(),
-            Some(Err(crate::MspPacketError::Parser(
-                MspParserError::InvalidBufferState
-            )))
-        );
-        assert_eq!(packets.next(), None);
-        assert_eq!(packets.next(), None);
-        parser.reset();
-        assert_eq!(parser.next_packet(&mut input), Ok(None));
-    }
-
-    #[test]
-    fn failed_buffer_append_does_not_consume_input_or_change_state() {
+    fn out_of_bounds_buffer_helpers_reset_without_panicking() {
         let mut parser = MspParser::<9>::new();
         parser.end = 8;
-        let before = parser.buffer;
         let mut input = b"ab".as_slice();
-        assert_eq!(
-            parser.pull_from_input(&mut input, 2),
-            Err(MspParserError::BufferCapacityExceeded)
-        );
+        parser.pull_from_input(&mut input, 2);
         assert_eq!(input, b"ab");
-        assert_eq!((parser.start, parser.end), (0, 8));
-        assert_eq!(parser.buffer, before);
+        assert_eq!((parser.start, parser.end), (0, 0));
+
+        parser.end = 8;
         let inspection = inspect_frame(&frame(&[]));
         assert!(matches!(inspection, FrameInspection::Complete(_)));
         if let FrameInspection::Complete(frame) = inspection {
-            assert_eq!(
-                parser.consume_buffered_frame(frame),
-                Err(MspParserError::InvalidBufferState)
-            );
+            assert_eq!(parser.consume_buffered_frame(frame), None);
         }
-        assert_eq!((parser.start, parser.end), (0, 8));
+        assert_eq!((parser.start, parser.end), (0, 0));
     }
 
     #[test]
@@ -1702,10 +1423,6 @@ mod tests {
                 actual: 8
             }),
             "incomplete MSP frame: need 9 bytes, got 8"
-        );
-        assert_eq!(
-            error_message(&MspParserError::InvalidBufferState),
-            "invalid MSP parser buffer state"
         );
     }
 
@@ -1748,7 +1465,7 @@ mod tests {
         );
 
         let partial = frame(b"hello");
-        assert_eq!(parser.next(&mut &partial[..5]), Ok(None));
+        assert_eq!(parser.next(&mut &partial[..5]), None);
         assert_eq!(
             std::format!("{parser:?}"),
             "MspParser { capacity: 32, start: 0, end: 5, buffered_len: 5, .. }"
