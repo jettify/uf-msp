@@ -39,14 +39,6 @@ impl MspPayload for MspAttitude {
     }
 }
 
-impl TryFrom<&[u8]> for MspAttitude {
-    type Error = MspDecodeError;
-
-    fn try_from(payload: &[u8]) -> Result<Self, Self::Error> {
-        Self::from_bytes(payload)
-    }
-}
-
 /// `MSP_RAW_IMU` values in X, Y, Z order.
 ///
 /// Values retain their wire representation. Sensor scaling depends on the
@@ -88,14 +80,6 @@ impl MspPayload for MspRawImu {
     }
 }
 
-impl TryFrom<&[u8]> for MspRawImu {
-    type Error = MspDecodeError;
-
-    fn try_from(payload: &[u8]) -> Result<Self, Self::Error> {
-        Self::from_bytes(payload)
-    }
-}
-
 /// Altitude and vertical speed transmitted by `MSP_ALTITUDE`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -122,13 +106,5 @@ impl MspPayload for MspAltitude {
         writer.write_i32(self.altitude_cm)?;
         writer.write_i16(self.vario_cm_s)?;
         Ok(writer.written())
-    }
-}
-
-impl TryFrom<&[u8]> for MspAltitude {
-    type Error = MspDecodeError;
-
-    fn try_from(payload: &[u8]) -> Result<Self, Self::Error> {
-        Self::from_bytes(payload)
     }
 }

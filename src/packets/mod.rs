@@ -59,6 +59,21 @@ fn decode_command(
     }
 }
 
+// Generates `TryFrom<&[u8]>` delegating to `MspPayload::from_bytes`.
+macro_rules! impl_try_from_bytes {
+    ($( $ty:ty ),* $(,)?) => {
+        $(
+            impl TryFrom<&[u8]> for $ty {
+                type Error = MspDecodeError;
+
+                fn try_from(payload: &[u8]) -> Result<Self, Self::Error> {
+                    <$ty as MspPayload>::from_bytes(payload)
+                }
+            }
+        )*
+    };
+}
+
 // Each row declares a request and response. A variant without a type has an empty payload.
 macro_rules! define_msp_messages {
     (
@@ -75,6 +90,11 @@ macro_rules! define_msp_messages {
                 $(assert!(<$response_payload as MspPayload>::COMMAND_ID == $command);)?
             )+
         };
+
+        $(
+            $(impl_try_from_bytes!($request_payload);)?
+            $(impl_try_from_bytes!($response_payload);)?
+        )+
 
         /// Supported MSP requests, responses, and setter acknowledgments.
         #[derive(Debug, Clone, PartialEq, Eq)]

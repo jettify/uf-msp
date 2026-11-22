@@ -94,14 +94,6 @@ impl MspPayload for MspRc {
     }
 }
 
-impl TryFrom<&[u8]> for MspRc {
-    type Error = MspDecodeError;
-
-    fn try_from(payload: &[u8]) -> Result<Self, Self::Error> {
-        Self::from_bytes(payload)
-    }
-}
-
 /// `MSP_SET_RAW_RC` setter request payload (`0xC8`): variable array of up to 18 RC channel pulse widths.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -142,13 +134,5 @@ impl MspPayload for MspSetRawRc {
 
     fn to_bytes(&self, buffer: &mut [u8]) -> Result<usize, MspEncodeError> {
         encode_channels(self.channels(), buffer)
-    }
-}
-
-impl TryFrom<&[u8]> for MspSetRawRc {
-    type Error = MspDecodeError;
-
-    fn try_from(payload: &[u8]) -> Result<Self, Self::Error> {
-        Self::from_bytes(payload)
     }
 }

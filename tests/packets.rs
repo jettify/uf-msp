@@ -779,10 +779,15 @@ fn public_types_implement_defmt_format() {
 
 #[test]
 fn variable_payloads_accept_native_views_up_to_their_capacity() {
-    use uf_msp::{
-        CapacityError, MAX_CRAFT_NAME_LEN, MAX_FLIGHT_MODE_EXT_BYTES, MAX_RC_CHANNELS, MspName,
-        MspRc, MspSetName, MspSetRawRc, MspStatusExtended,
-    };
+    use uf_msp::CapacityError;
+    use uf_msp::MAX_CRAFT_NAME_LEN;
+    use uf_msp::MAX_FLIGHT_MODE_EXT_BYTES;
+    use uf_msp::MAX_RC_CHANNELS;
+    use uf_msp::MspName;
+    use uf_msp::MspRc;
+    use uf_msp::MspSetName;
+    use uf_msp::MspSetRawRc;
+    use uf_msp::MspStatusExtended;
 
     let name = "é".repeat(MAX_CRAFT_NAME_LEN / 2);
     let long_name = name.clone() + "x";

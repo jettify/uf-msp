@@ -50,14 +50,6 @@ impl MspPayload for MspApiVersion {
     }
 }
 
-impl TryFrom<&[u8]> for MspApiVersion {
-    type Error = MspDecodeError;
-
-    fn try_from(payload: &[u8]) -> Result<Self, Self::Error> {
-        Self::from_bytes(payload)
-    }
-}
-
 /// `MSP_FC_VARIANT` response payload (`0x02`): 4-byte ASCII flight controller identifier (e.g. `*b"BTFL"`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -92,14 +84,6 @@ impl MspPayload for MspFcVariant {
     }
 }
 
-impl TryFrom<&[u8]> for MspFcVariant {
-    type Error = MspDecodeError;
-
-    fn try_from(payload: &[u8]) -> Result<Self, Self::Error> {
-        Self::from_bytes(payload)
-    }
-}
-
 /// `MSP_FC_VERSION` response payload (`0x03`): 3-byte flight controller version (`major.minor.patch`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -129,14 +113,6 @@ impl MspPayload for MspFcVersion {
         writer.write_u8(self.minor)?;
         writer.write_u8(self.patch)?;
         Ok(writer.written())
-    }
-}
-
-impl TryFrom<&[u8]> for MspFcVersion {
-    type Error = MspDecodeError;
-
-    fn try_from(payload: &[u8]) -> Result<Self, Self::Error> {
-        Self::from_bytes(payload)
     }
 }
 
@@ -183,14 +159,6 @@ impl MspPayload for MspName {
     }
 }
 
-impl TryFrom<&[u8]> for MspName {
-    type Error = MspDecodeError;
-
-    fn try_from(payload: &[u8]) -> Result<Self, Self::Error> {
-        Self::from_bytes(payload)
-    }
-}
-
 /// Craft name setter request payload for `MSP_SET_NAME` (`0x0B`).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -231,14 +199,6 @@ impl MspPayload for MspSetName {
         let mut writer = PayloadWriter::with_min_size(buffer, self.payload_size())?;
         writer.write_bytes(self.name.as_bytes())?;
         Ok(writer.written())
-    }
-}
-
-impl TryFrom<&[u8]> for MspSetName {
-    type Error = MspDecodeError;
-
-    fn try_from(payload: &[u8]) -> Result<Self, Self::Error> {
-        Self::from_bytes(payload)
     }
 }
 
@@ -533,14 +493,6 @@ impl MspPayload for MspStatus {
     }
 }
 
-impl TryFrom<&[u8]> for MspStatus {
-    type Error = MspDecodeError;
-
-    fn try_from(payload: &[u8]) -> Result<Self, Self::Error> {
-        Self::from_bytes(payload)
-    }
-}
-
 /// Parameterized request payload for `MSP_REBOOT` (`0x44`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -573,14 +525,6 @@ impl MspPayload for MspRebootRequest {
             writer.write_u8(mode)?;
         }
         Ok(writer.written())
-    }
-}
-
-impl TryFrom<&[u8]> for MspRebootRequest {
-    type Error = MspDecodeError;
-
-    fn try_from(payload: &[u8]) -> Result<Self, Self::Error> {
-        Self::from_bytes(payload)
     }
 }
 
@@ -620,13 +564,5 @@ impl MspPayload for MspRebootResponse {
             writer.write_bool(ready)?;
         }
         Ok(writer.written())
-    }
-}
-
-impl TryFrom<&[u8]> for MspRebootResponse {
-    type Error = MspDecodeError;
-
-    fn try_from(payload: &[u8]) -> Result<Self, Self::Error> {
-        Self::from_bytes(payload)
     }
 }
