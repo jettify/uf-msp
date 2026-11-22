@@ -8,6 +8,82 @@
 A `no_std`, allocation-free Rust library for MSP framing and owned packet decoding.
 Requires Rust 1.88 or newer.
 
+## Features
+
+* `no_std` and allocator-free, with no dependency on a specific MCU or serial driver.
+* MSP v1, native MSP v2, and MSP v2 over v1 framing, including jumbo frames for both v1 formats.
+* Zero-copy parsing for contiguous frames, with a fixed-size buffer for frames split across reads.
+* Owned, typed requests and responses for the commands marked as implemented in the coverage table.
+* Raw frame parsing and encoding for custom payloads and commands without typed support.
+* Optional `defmt` support for embedded logging.
+
+## Usage
+
+### Decode a typed packet
+
+Use `MspParser::packets` to decode owned packets from a byte slice. Run this
+example with `cargo run --example simple`.
+
+```rust
+use uf_msp::MspParser;
+
+fn main() {
+    // MSP v1 response to MSP_API_VERSION with payload [0, 1, 49].
+    let bytes = b"$M>\x03\x01\x00\x01\x31\x32";
+    let mut parser = MspParser::<32>::new();
+    let mut input = bytes.as_slice();
+
+    for result in parser.packets(&mut input) {
+        match result {
+            Ok(packet) => println!("{:?}", packet.message),
+            Err(error) => eprintln!("{error}"),
+        }
+    }
+}
+```
+
+### Read and write raw frames
+
+Use the raw API for commands without a typed codec. This example encodes an
+`MSP_BOARD_INFO` request and feeds it back to the parser in chunks. Run it
+with `cargo run --example raw_chunks`.
+
+```rust
+use uf_msp::MspDirection;
+use uf_msp::MspEncodeError;
+use uf_msp::MspParser;
+use uf_msp::MspVersion;
+use uf_msp::commands::MSP_BOARD_INFO;
+use uf_msp::write_raw_frame_to_buffer;
+
+fn main() -> Result<(), MspEncodeError> {
+    let mut bytes = [0; 32];
+    let len = write_raw_frame_to_buffer(
+        &mut bytes,
+        MspVersion::V1,
+        MspDirection::Request,
+        0,
+        MSP_BOARD_INFO,
+        &[],
+    )?;
+
+    let mut parser = MspParser::<32>::new();
+    for mut input in bytes[..len].chunks(3) {
+        while let Some(frame) = parser.next(&mut input) {
+            println!(
+                "cmd={:#04x}, payload={:?}",
+                frame.command_id(),
+                frame.payload()
+            );
+        }
+    }
+    Ok(())
+}
+```
+
+Reuse the parser across reads. Its buffer must fit the entire wire frame when
+the frame spans multiple chunks.
+
 ## Implementation status
 
 **Legend:**
@@ -52,7 +128,7 @@ Requires Rust 1.88 or newer.
 | `MSP_CF_SERIAL_CONFIG` | `0x36` | 🔴 | Get Cleanflight serial configuration |
 | `MSP_VOLTAGE_METER_CONFIG` | `0x38` | 🔴 | Get voltage meter configuration |
 | `MSP_SET_VOLTAGE_METER_CONFIG` | `0x39` | 🔴 | Set voltage meter configuration |
-| `MSP_SONAR_ALTITUDE` | `0x3A` | 🔴 | Get sonar altitude [cm] |
+| `MSP_SONAR_ALTITUDE` | `0x3A` | 🔴 | Get sonar altitude in centimeters |
 | `MSP_PID_CONTROLLER` | `0x3B` | 🔴 | Get PID controller |
 | `MSP_SET_PID_CONTROLLER` | `0x3C` | 🔴 | Set PID controller |
 | `MSP_ARMING_CONFIG` | `0x3D` | 🔴 | Get arming configuration |

@@ -25,9 +25,17 @@ heapless = { version = "0.9", default-features = false }
 serialport = "4.10.1"
 
 [[example]]
+name = "simple"
+path = "examples/local_simple.rs"
+
+[[example]]
 name = "raw"
 path = "examples/local_raw.rs"
 test = false
+
+[[example]]
+name = "raw_chunks"
+path = "examples/local_raw_chunks.rs"
 
 [features]
 "defmt" = ["dep:defmt", "heapless/defmt"]
