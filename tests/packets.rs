@@ -150,7 +150,7 @@ fn responses_and_requests_across_formats_and_every_split() {
                     for chunk in [&bytes[..split], &bytes[split..]] {
                         let mut input = chunk;
                         packets.extend(parser.packets(&mut input).map(Result::unwrap));
-                        assert!(input.is_empty());
+                        assert_eq!(input, []);
                     }
                     assert_eq!(packets, core::slice::from_ref(&expected));
                 }
@@ -239,7 +239,7 @@ fn short_payloads_and_remote_errors_are_reported_and_consumed() {
             let mut parser = MspParser::<64>::new();
             let mut input = stream.as_slice();
             assert_eq!(parser.packets(&mut input).collect::<Vec<_>>(), expected);
-            assert!(input.is_empty());
+            assert_eq!(input, []);
         }
     }
 }
@@ -342,7 +342,7 @@ fn iterator_drains_buffered_frames_recovered_from_corrupt_envelope() {
     }
     // Recovery already consumed the transport input, but a second frame remains
     // in the spill buffer. A fresh iterator must drain it even with empty input.
-    assert!(input.is_empty());
+    assert_eq!(input, []);
     let mut packets = parser.packets(&mut input);
     assert_eq!(
         packets.next().unwrap().unwrap().message,
@@ -813,8 +813,8 @@ fn variable_payloads_accept_native_views_up_to_their_capacity() {
         capacity: MAX_RC_CHANNELS,
         requested: MAX_RC_CHANNELS + 1,
     };
-    assert!(MspRc::new(&[]).unwrap().channels().is_empty());
-    assert!(MspSetRawRc::new(&[]).unwrap().channels().is_empty());
+    assert_eq!(MspRc::new(&[]).unwrap().channels(), []);
+    assert_eq!(MspSetRawRc::new(&[]).unwrap().channels(), []);
     assert_eq!(MspRc::new(&channels).unwrap().channels(), &channels);
     assert_eq!(MspSetRawRc::new(&channels).unwrap().channels(), &channels);
     assert_eq!(MspRc::new(&long_channels), Err(channel_error));
@@ -823,7 +823,7 @@ fn variable_payloads_accept_native_views_up_to_their_capacity() {
     let mut extended = MspStatusExtended::default();
     let flags = [0x5a; MAX_FLIGHT_MODE_EXT_BYTES];
     let long_flags = [0xff; MAX_FLIGHT_MODE_EXT_BYTES + 1];
-    assert!(extended.flight_mode_flags_ext().is_empty());
+    assert_eq!(extended.flight_mode_flags_ext(), []);
     extended.set_flight_mode_flags_ext(&flags).unwrap();
     assert_eq!(extended.flight_mode_flags_ext(), &flags);
     assert_eq!(
@@ -835,7 +835,7 @@ fn variable_payloads_accept_native_views_up_to_their_capacity() {
     );
     assert_eq!(extended.flight_mode_flags_ext(), &flags);
     extended.set_flight_mode_flags_ext(&[]).unwrap();
-    assert!(extended.flight_mode_flags_ext().is_empty());
+    assert_eq!(extended.flight_mode_flags_ext(), []);
 }
 
 #[test]
@@ -864,63 +864,6 @@ fn archetype_packets_roundtrip_across_all_versions_and_directions() {
     use uf_msp::MspRebootResponse;
     use uf_msp::MspSetName;
     use uf_msp::MspSetRawRc;
-    use uf_msp::MspStatus;
-    use uf_msp::MspStatusExtended;
-    use uf_msp::MspStatusTail;
-    use uf_msp::commands::*;
-
-    let status_legacy = MspStatus {
-        cycle_time_us: 125,
-        i2c_error_count: 0,
-        sensors: 0x27,
-        flight_mode_flags: 0x0000_0003,
-        current_pid_profile_index: 1,
-        extended: None,
-    };
-    // Betaflight 4.5.2 carries a signed core temperature.
-    let mut extended_bf45 = MspStatusExtended::default();
-    extended_bf45.average_system_load_percent = 30;
-    extended_bf45.arming_disable_flags_count = 28;
-    extended_bf45.tail = Some(MspStatusTail::CoreTemp {
-        core_temp_celsius: -5,
-    });
-    assert_eq!(extended_bf45.core_temp_celsius(), Some(-5));
-    assert_eq!(extended_bf45.control_rate_profile_count(), None);
-    assert_eq!(extended_bf45.battery_profile(), None);
-
-    let status_bf45 = MspStatus {
-        cycle_time_us: 125,
-        i2c_error_count: 0,
-        sensors: 0x27,
-        flight_mode_flags: 0x0000_0003,
-        current_pid_profile_index: 0,
-        extended: Some(extended_bf45),
-    };
-
-    let mut extended = MspStatusExtended::default();
-    extended.set_flight_mode_flags_ext(&[0xaa, 0xbb]).unwrap();
-    extended.average_system_load_percent = 42;
-    extended.arming_disable_flags_count = 28;
-    extended.arming_disable_flags = 0x0010_0004;
-    extended.config_state_flags = 1;
-    extended.tail = Some(MspStatusTail::BatteryProfile {
-        core_temp_celsius: 55,
-        control_rate_profile_count: 4,
-        battery_profile_count: 3,
-        current_battery_profile_index: 1,
-    });
-    assert_eq!(extended.core_temp_celsius(), Some(55));
-    assert_eq!(extended.control_rate_profile_count(), Some(4));
-    assert_eq!(extended.battery_profile(), Some((3, 1)));
-
-    let status_ext = MspStatus {
-        cycle_time_us: 125,
-        i2c_error_count: 2,
-        sensors: 0x2f,
-        flight_mode_flags: 0x1234_5678,
-        current_pid_profile_index: 0,
-        extended: Some(extended),
-    };
 
     let cases: &[(MspMessage, Vec<u8>)] = &[
         // 1. Out Fixed & Optional Trailing Telemetry
@@ -948,24 +891,6 @@ fn archetype_packets_roundtrip_across_all_versions_and_directions() {
                 patch: 0,
             }),
             vec![4, 6, 0],
-        ),
-        (MspMessage::StatusRequest, vec![]),
-        (
-            MspMessage::Status(status_legacy),
-            vec![125, 0, 0, 0, 0x27, 0, 3, 0, 0, 0, 1],
-        ),
-        (
-            MspMessage::Status(status_bf45),
-            vec![
-                125, 0, 0, 0, 0x27, 0, 3, 0, 0, 0, 0, 30, 0, 0, 0, 0, 28, 0, 0, 0, 0, 0, 0xfb, 0xff,
-            ],
-        ),
-        (
-            MspMessage::Status(status_ext),
-            vec![
-                125, 0, 2, 0, 0x2f, 0, 0x78, 0x56, 0x34, 0x12, 0, 42, 0, 0, 0, 2, 0xaa, 0xbb, 28,
-                4, 0, 0x10, 0, 1, 55, 0, 4, 3, 1,
-            ],
         ),
         // 2. Out Variable-Length Array & String
         (MspMessage::NameRequest, vec![]),
@@ -1024,6 +949,91 @@ fn archetype_packets_roundtrip_across_all_versions_and_directions() {
         ),
     ];
 
+    assert_packets_roundtrip(cases);
+}
+
+#[test]
+fn status_packets_roundtrip_across_all_versions_and_directions() {
+    use uf_msp::MspStatus;
+    use uf_msp::MspStatusExtended;
+    use uf_msp::MspStatusTail;
+
+    let status_legacy = MspStatus {
+        cycle_time_us: 125,
+        i2c_error_count: 0,
+        sensors: 0x27,
+        flight_mode_flags: 0x0000_0003,
+        current_pid_profile_index: 1,
+        extended: None,
+    };
+    // Betaflight 4.5.2 carries a signed core temperature.
+    let mut extended_bf45 = MspStatusExtended::default();
+    extended_bf45.average_system_load_percent = 30;
+    extended_bf45.arming_disable_flags_count = 28;
+    extended_bf45.tail = Some(MspStatusTail::CoreTemp {
+        core_temp_celsius: -5,
+    });
+    assert_eq!(extended_bf45.core_temp_celsius(), Some(-5));
+    assert_eq!(extended_bf45.control_rate_profile_count(), None);
+    assert_eq!(extended_bf45.battery_profile(), None);
+
+    let status_bf45 = MspStatus {
+        cycle_time_us: 125,
+        i2c_error_count: 0,
+        sensors: 0x27,
+        flight_mode_flags: 0x0000_0003,
+        current_pid_profile_index: 0,
+        extended: Some(extended_bf45),
+    };
+
+    let mut extended = MspStatusExtended::default();
+    extended.set_flight_mode_flags_ext(&[0xaa, 0xbb]).unwrap();
+    extended.average_system_load_percent = 42;
+    extended.arming_disable_flags_count = 28;
+    extended.arming_disable_flags = 0x0010_0004;
+    extended.config_state_flags = 1;
+    extended.tail = Some(MspStatusTail::BatteryProfile {
+        core_temp_celsius: 55,
+        control_rate_profile_count: 4,
+        battery_profile_count: 3,
+        current_battery_profile_index: 1,
+    });
+    assert_eq!(extended.core_temp_celsius(), Some(55));
+    assert_eq!(extended.control_rate_profile_count(), Some(4));
+    assert_eq!(extended.battery_profile(), Some((3, 1)));
+
+    let status_ext = MspStatus {
+        cycle_time_us: 125,
+        i2c_error_count: 2,
+        sensors: 0x2f,
+        flight_mode_flags: 0x1234_5678,
+        current_pid_profile_index: 0,
+        extended: Some(extended),
+    };
+
+    assert_packets_roundtrip(&[
+        (MspMessage::StatusRequest, vec![]),
+        (
+            MspMessage::Status(status_legacy),
+            vec![125, 0, 0, 0, 0x27, 0, 3, 0, 0, 0, 1],
+        ),
+        (
+            MspMessage::Status(status_bf45),
+            vec![
+                125, 0, 0, 0, 0x27, 0, 3, 0, 0, 0, 0, 30, 0, 0, 0, 0, 28, 0, 0, 0, 0, 0, 0xfb, 0xff,
+            ],
+        ),
+        (
+            MspMessage::Status(status_ext),
+            vec![
+                125, 0, 2, 0, 0x2f, 0, 0x78, 0x56, 0x34, 0x12, 0, 42, 0, 0, 0, 2, 0xaa, 0xbb, 28,
+                4, 0, 0x10, 0, 1, 55, 0, 4, 3, 1,
+            ],
+        ),
+    ]);
+}
+
+fn assert_packets_roundtrip(cases: &[(MspMessage, Vec<u8>)]) {
     for version in VERSIONS {
         for (message, expected_payload) in cases {
             let dir_byte = match message.direction() {
@@ -1059,6 +1069,19 @@ fn archetype_packets_roundtrip_across_all_versions_and_directions() {
             }
         }
     }
+}
+
+#[test]
+fn variable_payload_decoding_checks() {
+    use uf_msp::MspFcVariant;
+    use uf_msp::MspName;
+    use uf_msp::MspRc;
+    use uf_msp::MspSetName;
+    use uf_msp::MspSetRawRc;
+    use uf_msp::commands::MSP_NAME;
+    use uf_msp::commands::MSP_RC;
+    use uf_msp::commands::MSP_SET_NAME;
+    use uf_msp::commands::MSP_SET_RAW_RC;
 
     // Verify MspFcVariant::as_str and invalid payload rejection for variable packets
     let variant = MspFcVariant::try_from(b"BTFL".as_slice()).unwrap();
@@ -1103,6 +1126,14 @@ fn error_accessors_predicates_and_unified_question_mark_ergonomics() {
     use uf_msp::MspName;
     use uf_msp::commands::MSP_NAME;
 
+    // End-to-end helper using uf_msp::Result and `?` across CapacityError,
+    // MspEncodeError, MspFrameError, and MspDecodeError without manual mapping.
+    fn roundtrip_craft_name(raw_name: &str, buf: &mut [u8]) -> uf_msp::Result<MspPacket> {
+        let payload = MspName::new(raw_name)?;
+        let len = write_packet_to_buffer(buf, MspVersion::V2, MspDirection::Response, 0, &payload)?;
+        MspPacket::from_frame_bytes(&buf[..len])
+    }
+
     let unsupported = MspDecodeError::UnsupportedCommand { command_id: 42 };
     assert_eq!(unsupported.command_id(), 42);
     assert!(unsupported.is_unsupported());
@@ -1143,14 +1174,6 @@ fn error_accessors_predicates_and_unified_question_mark_ergonomics() {
         .is_incomplete()
     );
     assert!(!MspFrameError::InvalidPreamble.is_incomplete());
-
-    // End-to-end helper using uf_msp::Result and `?` across CapacityError,
-    // MspEncodeError, MspFrameError, and MspDecodeError without manual mapping.
-    fn roundtrip_craft_name(raw_name: &str, buf: &mut [u8]) -> uf_msp::Result<MspPacket> {
-        let payload = MspName::new(raw_name)?;
-        let len = write_packet_to_buffer(buf, MspVersion::V2, MspDirection::Response, 0, &payload)?;
-        MspPacket::from_frame_bytes(&buf[..len])
-    }
 
     let mut buf = [0u8; 32];
     let packet = roundtrip_craft_name("uflight", &mut buf).unwrap();

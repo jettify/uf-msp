@@ -63,7 +63,7 @@ impl MspRc {
     ///
     /// # Errors
     ///
-    /// Returns a capacity error if the input exceeds MAX_RC_CHANNELS.
+    /// Returns a capacity error if the input exceeds `MAX_RC_CHANNELS`.
     pub fn new(channels: &[u16]) -> Result<Self, CapacityError> {
         copy_channels(channels).map(|channels| Self { channels })
     }
@@ -106,7 +106,7 @@ impl MspSetRawRc {
     ///
     /// # Errors
     ///
-    /// Returns a capacity error if the input exceeds MAX_RC_CHANNELS.
+    /// Returns a capacity error if the input exceeds `MAX_RC_CHANNELS`.
     pub fn new(channels: &[u16]) -> Result<Self, CapacityError> {
         copy_channels(channels).map(|channels| Self { channels })
     }

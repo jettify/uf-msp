@@ -6,14 +6,11 @@ use crate::constants::V1_CHECKSUM_LEN;
 use crate::constants::V1_ENCAPSULATED_CMD;
 use crate::constants::V1_HEADER_LEN;
 use crate::constants::V1_JUMBO_LENGTH_LEN;
-use crate::constants::V1_JUMBO_LENGTH_LEN_U32;
 use crate::constants::V1_JUMBO_SIZE;
-use crate::constants::V1_MIN_FRAME_LEN_U32;
+use crate::constants::V1_MIN_FRAME_LEN;
 use crate::constants::V2_HEADER_LEN;
 use crate::constants::V2_INNER_OVERHEAD;
-use crate::constants::V2_INNER_OVERHEAD_U32;
 use crate::constants::V2_MIN_FRAME_LEN;
-use crate::constants::V2_MIN_FRAME_LEN_U32;
 use crate::constants::V2_OVER_V1_HEADER_LEN;
 
 /// MSP framing version. Jumbo frames retain their underlying version.
@@ -252,9 +249,8 @@ fn inspect_v2_frame(bytes: &[u8]) -> FrameInspection {
     };
     let &[_, _, _, flags, command_id_lo, command_id_hi, len_lo, len_hi] = header;
     let command_id = u16::from_le_bytes([command_id_lo, command_id_hi]);
-    // Add V2_MIN_FRAME_LEN as u32 so even a 16-bit target cannot overflow before checking usize.
-    let payload_len = u32::from(u16::from_le_bytes([len_lo, len_hi]));
-    let Ok(frame_len) = usize::try_from(payload_len + V2_MIN_FRAME_LEN_U32) else {
+    let payload_len = usize::from(u16::from_le_bytes([len_lo, len_hi]));
+    let Some(frame_len) = payload_len.checked_add(V2_MIN_FRAME_LEN) else {
         return FrameInspection::Invalid(MspFrameError::LengthOverflow);
     };
     if bytes.len() < frame_len {
@@ -322,7 +318,8 @@ fn inspect_v1_frame(bytes: &[u8]) -> FrameInspection {
     } else {
         V1_HEADER_LEN
     };
-    let payload_offset = jumbo_len_offset + if is_jumbo { V1_JUMBO_LENGTH_LEN } else { 0 };
+    let jumbo_len = if is_jumbo { V1_JUMBO_LENGTH_LEN } else { 0 };
+    let payload_offset = jumbo_len_offset + jumbo_len;
     let Some(full_header) = bytes.get(..payload_offset) else {
         return FrameInspection::Incomplete(payload_offset);
     };
@@ -341,14 +338,13 @@ fn inspect_v1_frame(bytes: &[u8]) -> FrameInspection {
         else {
             return FrameInspection::Incomplete(V2_OVER_V1_HEADER_LEN);
         };
-        let inner_payload_len = u32::from(u16::from_le_bytes([len_lo, len_hi]));
-        let expected_outer_size = inner_payload_len + V2_INNER_OVERHEAD_U32;
-        if expected_outer_size != u32::from(outer_size) {
-            let Ok(expected) = usize::try_from(expected_outer_size) else {
-                return FrameInspection::Invalid(MspFrameError::LengthOverflow);
-            };
+        let inner_payload_len = usize::from(u16::from_le_bytes([len_lo, len_hi]));
+        let Some(expected_outer_size) = inner_payload_len.checked_add(V2_INNER_OVERHEAD) else {
+            return FrameInspection::Invalid(MspFrameError::LengthOverflow);
+        };
+        if expected_outer_size != usize::from(outer_size) {
             return FrameInspection::Invalid(MspFrameError::InvalidEncapsulationLength {
-                expected,
+                expected: expected_outer_size,
                 actual: usize::from(outer_size),
             });
         }
@@ -361,10 +357,7 @@ fn inspect_v1_frame(bytes: &[u8]) -> FrameInspection {
         (MspVersion::V1, 0, u16::from(command_field))
     };
 
-    let total_len_u32 = u32::from(outer_size)
-        + V1_MIN_FRAME_LEN_U32
-        + if is_jumbo { V1_JUMBO_LENGTH_LEN_U32 } else { 0 };
-    let Ok(frame_len) = usize::try_from(total_len_u32) else {
+    let Some(frame_len) = usize::from(outer_size).checked_add(V1_MIN_FRAME_LEN + jumbo_len) else {
         return FrameInspection::Invalid(MspFrameError::LengthOverflow);
     };
     let Some(frame_bytes) = bytes.get(..frame_len) else {
@@ -384,25 +377,10 @@ fn inspect_v1_frame(bytes: &[u8]) -> FrameInspection {
         });
     }
 
-    if is_encapsulated {
-        let outer_checksum_idx = frame_len - V1_CHECKSUM_LEN;
-        let Some(inner_header) = frame_bytes.get(V1_HEADER_LEN..V2_OVER_V1_HEADER_LEN) else {
-            return FrameInspection::Incomplete(V2_OVER_V1_HEADER_LEN);
-        };
-        let Some((&received_crc, payload)) = frame_bytes
-            .get(payload_offset..outer_checksum_idx)
-            .and_then(|s| s.split_last())
-        else {
-            return FrameInspection::Incomplete(frame_len);
-        };
-        let header_crc = crc8_dvbs2_slice(0, inner_header);
-        let calculated_crc = crc8_dvbs2_slice(header_crc, payload);
-        if calculated_crc != received_crc {
-            return FrameInspection::Invalid(MspFrameError::ChecksumMismatch {
-                expected: calculated_crc,
-                actual: received_crc,
-            });
-        }
+    if is_encapsulated
+        && let Err(inspection) = validate_encapsulated_crc(frame_bytes, payload_offset)
+    {
+        return inspection;
     }
 
     FrameInspection::Complete(ValidatedFrameMetadata {
@@ -414,6 +392,32 @@ fn inspect_v1_frame(bytes: &[u8]) -> FrameInspection {
         command_id,
         checksum: received_xor,
     })
+}
+
+fn validate_encapsulated_crc(
+    frame_bytes: &[u8],
+    payload_offset: usize,
+) -> Result<(), FrameInspection> {
+    let frame_len = frame_bytes.len();
+    let outer_checksum_idx = frame_len - V1_CHECKSUM_LEN;
+    let Some(inner_header) = frame_bytes.get(V1_HEADER_LEN..V2_OVER_V1_HEADER_LEN) else {
+        return Err(FrameInspection::Incomplete(V2_OVER_V1_HEADER_LEN));
+    };
+    let Some((&received_crc, payload)) = frame_bytes
+        .get(payload_offset..outer_checksum_idx)
+        .and_then(|s| s.split_last())
+    else {
+        return Err(FrameInspection::Incomplete(frame_len));
+    };
+    let header_crc = crc8_dvbs2_slice(0, inner_header);
+    let calculated_crc = crc8_dvbs2_slice(header_crc, payload);
+    if calculated_crc != received_crc {
+        return Err(FrameInspection::Invalid(MspFrameError::ChecksumMismatch {
+            expected: calculated_crc,
+            actual: received_crc,
+        }));
+    }
+    Ok(())
 }
 
 /// Splits a byte stream into validated MSP frames without allocation.
@@ -816,7 +820,7 @@ mod tests {
     #[test]
     fn undersized_encapsulation_rejects_at_outer_header() {
         let probe = v1_frame(&[], false, false);
-        for size in 0..V2_INNER_OVERHEAD as u8 {
+        for size in 0..u8::try_from(V2_INNER_OVERHEAD).unwrap() {
             let header = [b'$', b'M', b'>', size, V1_ENCAPSULATED_CMD];
             let expected = MspFrameError::InvalidEncapsulationLength {
                 expected: V2_INNER_OVERHEAD,
@@ -829,7 +833,7 @@ mod tests {
                 let mut parser = MspParser::<32>::new();
                 assert_eq!(parser.next(&mut &header[..split]), None);
                 assert_eq!(parser.next(&mut &header[split..]), None);
-                assert!(parser.buffered().is_empty());
+                assert_eq!(parser.buffered(), []);
                 assert_eq!(
                     parser.next(&mut probe.as_slice()).unwrap().as_bytes(),
                     probe
@@ -1098,10 +1102,10 @@ mod tests {
                 assert_eq!(parser.next(&mut &outer[..split]), None);
                 let mut input = &outer[split..];
                 assert_eq!(parser.next(&mut input), None);
-                assert!(input.is_empty());
+                assert_eq!(input, []);
                 let mut tail = &inner[prefix_len + 1..];
                 assert_eq!(parser.next(&mut tail).unwrap().as_bytes(), inner);
-                assert!(tail.is_empty());
+                assert_eq!(tail, []);
             }
         }
     }

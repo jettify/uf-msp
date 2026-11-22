@@ -128,7 +128,7 @@ impl MspName {
     ///
     /// # Errors
     ///
-    /// Returns a capacity error if the name exceeds MAX_CRAFT_NAME_LEN bytes.
+    /// Returns a capacity error if the name exceeds `MAX_CRAFT_NAME_LEN` bytes.
     pub fn new(name: &str) -> Result<Self, CapacityError> {
         copy_craft_name(name).map(|name| Self { name })
     }
@@ -171,7 +171,7 @@ impl MspSetName {
     ///
     /// # Errors
     ///
-    /// Returns a capacity error if the name exceeds MAX_CRAFT_NAME_LEN bytes.
+    /// Returns a capacity error if the name exceeds `MAX_CRAFT_NAME_LEN` bytes.
     pub fn new(name: &str) -> Result<Self, CapacityError> {
         copy_craft_name(name).map(|name| Self { name })
     }
@@ -315,7 +315,7 @@ impl MspStatusExtended {
     ///
     /// # Errors
     ///
-    /// Returns a capacity error if the input exceeds MAX_FLIGHT_MODE_EXT_BYTES.
+    /// Returns a capacity error if the input exceeds `MAX_FLIGHT_MODE_EXT_BYTES`.
     /// On error, the previous flag bytes are preserved.
     pub fn set_flight_mode_flags_ext(&mut self, flags: &[u8]) -> Result<(), CapacityError> {
         self.flight_mode_flags_ext = heapless::Vec::from_slice(flags)
@@ -456,9 +456,7 @@ impl MspPayload for MspStatus {
         if let Some(ext) = &self.extended {
             writer.write_u16(ext.average_system_load_percent)?;
             writer.write_u16(ext.gyro_cycle_time)?;
-            let flags = ext.flight_mode_flags_ext();
-            writer.write_u8(flags.len() as u8)?;
-            writer.write_bytes(flags)?;
+            writer.write_len_prefixed_bytes(ext.flight_mode_flags_ext())?;
             writer.write_u8(ext.arming_disable_flags_count)?;
             writer.write_u32(ext.arming_disable_flags)?;
             writer.write_u8(ext.config_state_flags)?;

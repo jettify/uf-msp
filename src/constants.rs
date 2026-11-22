@@ -22,11 +22,9 @@ pub(crate) const V1_CHECKSUM_LEN: usize = 1;
 
 /// Minimum MSP v1 wire frame size (5-byte header + 1-byte XOR checksum).
 pub(crate) const V1_MIN_FRAME_LEN: usize = V1_HEADER_LEN + V1_CHECKSUM_LEN;
-pub(crate) const V1_MIN_FRAME_LEN_U32: u32 = V1_MIN_FRAME_LEN as u32;
 
 /// Size of the extended length field in a jumbo MSP v1 frame.
 pub(crate) const V1_JUMBO_LENGTH_LEN: usize = V1_JUMBO_HEADER_LEN - V1_HEADER_LEN;
-pub(crate) const V1_JUMBO_LENGTH_LEN_U32: u32 = V1_JUMBO_LENGTH_LEN as u32;
 
 /// MSP v1 `size` field value indicating a 2-byte jumbo length follows.
 pub(crate) const V1_JUMBO_SIZE: u8 = 255;
@@ -43,14 +41,12 @@ pub(crate) const V2_HEADER_LEN: usize = 8;
 /// Minimum valid MSP v2 frame size (empty payload: 8-byte header + 1-byte CRC).
 /// See [`V1_MIN_FRAME_LEN`] for the minimum v1 frame size.
 pub(crate) const V2_MIN_FRAME_LEN: usize = V2_HEADER_LEN + CRC_LEN;
-pub(crate) const V2_MIN_FRAME_LEN_U32: u32 = V2_MIN_FRAME_LEN as u32;
 
 /// Inner MSP v2 header size inside a v1 envelope: flags (1), command ID (2), payload length (2).
 pub(crate) const V2_INNER_HEADER_LEN: usize = V2_HEADER_LEN - PREAMBLE_LEN;
 
 /// Additional bytes inside the outer v1 `size` for an encapsulated v2 frame (5-byte inner header + 1-byte inner CRC).
 pub(crate) const V2_INNER_OVERHEAD: usize = V2_INNER_HEADER_LEN + CRC_LEN;
-pub(crate) const V2_INNER_OVERHEAD_U32: u32 = V2_INNER_OVERHEAD as u32;
 
 /// Offset where the inner MSP v2 header ends inside a v1 frame (`5 + 5 = 10`).
 pub(crate) const V2_OVER_V1_HEADER_LEN: usize = V1_HEADER_LEN + V2_INNER_HEADER_LEN;
