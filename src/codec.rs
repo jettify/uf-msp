@@ -1,4 +1,6 @@
+use crate::MspDecodeError;
 use crate::MspDirection;
+use crate::MspEncodeError;
 use crate::MspVersion;
 use crate::constants::CRC_LEN;
 use crate::constants::PREAMBLE_LEN;
@@ -44,114 +46,6 @@ pub trait MspPayload: Sized {
     /// [`Self::payload_size`] bytes.
     fn to_bytes(&self, buffer: &mut [u8]) -> Result<usize, MspEncodeError>;
 }
-
-/// Why a validated frame could not be decoded as a supported packet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[non_exhaustive]
-pub enum MspDecodeError {
-    UnsupportedCommand {
-        command_id: u16,
-    },
-    RemoteError {
-        command_id: u16,
-    },
-    /// A payload has fewer than the required prefix bytes.
-    PayloadTooShort {
-        command_id: u16,
-        required: usize,
-        actual: usize,
-    },
-    /// A payload meets the minimum size, but contains malformed inner fields
-    /// (such as invalid UTF-8, an unknown discriminant, or a trailing slice exceeding capacity).
-    InvalidPayload {
-        command_id: u16,
-    },
-}
-
-impl core::fmt::Display for MspDecodeError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::UnsupportedCommand { command_id } => {
-                write!(f, "unsupported MSP command {command_id}")
-            }
-            Self::RemoteError { command_id } => {
-                write!(f, "remote MSP error for command {command_id}")
-            }
-            Self::PayloadTooShort {
-                command_id,
-                required,
-                actual,
-            } => write!(
-                f,
-                "MSP command {command_id} payload too short: need {required} bytes, got {actual}"
-            ),
-            Self::InvalidPayload { command_id } => {
-                write!(f, "invalid MSP payload for command {command_id}")
-            }
-        }
-    }
-}
-
-impl core::error::Error for MspDecodeError {}
-
-/// Why a payload or frame could not be serialized into a caller buffer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[non_exhaustive]
-pub enum MspEncodeError {
-    /// The destination buffer cannot hold the serialized payload or frame.
-    BufferTooSmall {
-        required: usize,
-        actual: usize,
-    },
-    /// MSP v1 only supports command IDs `0..=254` (`255` is reserved for v2 encapsulation).
-    InvalidV1Command {
-        command_id: u16,
-    },
-    /// The payload exceeds the maximum size representable by the chosen wire format.
-    PayloadTooLarge {
-        max: usize,
-        actual: usize,
-    },
-    PayloadSizeMismatch {
-        expected: usize,
-        written: usize,
-    },
-}
-
-impl core::fmt::Display for MspEncodeError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::BufferTooSmall { required, actual } => {
-                write!(
-                    f,
-                    "MSP buffer too small: need {required} bytes, got {actual}"
-                )
-            }
-            Self::InvalidV1Command { command_id } => {
-                write!(
-                    f,
-                    "MSP command {command_id} cannot be encoded as raw MSP v1 (must be < 255)"
-                )
-            }
-            Self::PayloadTooLarge { max, actual } => {
-                write!(
-                    f,
-                    "MSP payload too large: maximum {max} bytes, got {actual}"
-                )
-            }
-            Self::PayloadSizeMismatch { expected, written } => {
-                write!(
-                    f,
-                    "MSP payload size mismatch: expected {expected} bytes, wrote {written}"
-                )
-            }
-        }
-    }
-}
-
-impl core::error::Error for MspEncodeError {}
 
 /// Sequential zero-copy reader for decoding little-endian MSP payload fields.
 ///

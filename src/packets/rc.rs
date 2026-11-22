@@ -13,10 +13,7 @@ pub const MAX_RC_CHANNELS: usize = 18;
 type Channels = heapless::Vec<u16, MAX_RC_CHANNELS, u8>;
 
 fn copy_channels(channels: &[u16]) -> Result<Channels, CapacityError> {
-    Channels::from_slice(channels).map_err(|_| CapacityError {
-        capacity: MAX_RC_CHANNELS,
-        requested: channels.len(),
-    })
+    Channels::from_slice(channels).map_err(|_| CapacityError::new(MAX_RC_CHANNELS, channels.len()))
 }
 
 fn decode_channels(command_id: u16, data: &[u8]) -> Result<Channels, MspDecodeError> {
@@ -25,7 +22,11 @@ fn decode_channels(command_id: u16, data: &[u8]) -> Result<Channels, MspDecodeEr
     }
     let count = data.len() / 2;
     if count > MAX_RC_CHANNELS {
-        return Err(MspDecodeError::InvalidPayload { command_id });
+        return Err(MspDecodeError::CapacityExceeded {
+            command_id,
+            capacity: MAX_RC_CHANNELS,
+            requested: count,
+        });
     }
     let mut reader = PayloadReader::with_min_size(command_id, data, data.len())?;
     let mut channels = Channels::new();
@@ -33,7 +34,11 @@ fn decode_channels(command_id: u16, data: &[u8]) -> Result<Channels, MspDecodeEr
         let ch = reader.read_u16()?;
         channels
             .push(ch)
-            .map_err(|_| MspDecodeError::InvalidPayload { command_id })?;
+            .map_err(|_| MspDecodeError::CapacityExceeded {
+                command_id,
+                capacity: MAX_RC_CHANNELS,
+                requested: count,
+            })?;
     }
     Ok(channels)
 }

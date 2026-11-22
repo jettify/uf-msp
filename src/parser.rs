@@ -1,3 +1,4 @@
+use crate::MspFrameError;
 use crate::constants::CRC_LEN;
 use crate::constants::CRC8_DVBS2_POLY;
 use crate::constants::PREAMBLE_LEN;
@@ -85,62 +86,6 @@ pub const fn crc8_dvbs2_slice(initial: u8, mut data: &[u8]) -> u8 {
     }
     crc
 }
-
-/// Why a standalone byte slice could not be validated as an MSP frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[non_exhaustive]
-pub enum MspFrameError {
-    /// More bytes are needed; `required` is the next validation threshold.
-    Incomplete { required: usize, actual: usize },
-    /// The frame does not begin with `$M` or `$X`.
-    InvalidPreamble,
-    /// The direction byte is neither `<`, `>`, nor `!`.
-    InvalidDirection,
-    /// The outer payload size differs from the inner header plus payload and CRC.
-    /// `expected` is the minimum overhead when the outer size cannot hold an inner header.
-    InvalidEncapsulationLength { expected: usize, actual: usize },
-    /// The complete frame length cannot be represented on this target.
-    LengthOverflow,
-    /// A complete frame is followed by additional bytes.
-    LengthMismatch { expected: usize, actual: usize },
-    /// The wire checksum differs from the calculated checksum.
-    ChecksumMismatch { expected: u8, actual: u8 },
-}
-
-impl core::fmt::Display for MspFrameError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Incomplete { required, actual } => {
-                write!(
-                    f,
-                    "incomplete MSP frame: need {required} bytes, got {actual}"
-                )
-            }
-            Self::InvalidPreamble => f.write_str("invalid MSP preamble"),
-            Self::InvalidDirection => f.write_str("invalid MSP direction"),
-            Self::InvalidEncapsulationLength { expected, actual } => write!(
-                f,
-                "invalid MSP encapsulation length: expected {expected} bytes, got {actual}"
-            ),
-            Self::LengthOverflow => f.write_str("MSP frame length exceeds target address space"),
-            Self::LengthMismatch { expected, actual } => {
-                write!(
-                    f,
-                    "MSP frame length mismatch: expected {expected} bytes, got {actual}"
-                )
-            }
-            Self::ChecksumMismatch { expected, actual } => {
-                write!(
-                    f,
-                    "MSP checksum mismatch: expected {expected:#04x}, got {actual:#04x}"
-                )
-            }
-        }
-    }
-}
-
-impl core::error::Error for MspFrameError {}
 
 /// A complete MSP frame with a valid header and checksum(s).
 ///

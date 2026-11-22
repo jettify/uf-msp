@@ -373,8 +373,20 @@ fn errors_implement_display_and_error_trait() {
             "MSP command 108 payload too short: need 6 bytes, got 5",
         ),
         (
-            MspDecodeError::InvalidPayload { command_id: 10 },
-            "invalid MSP payload for command 10",
+            MspDecodeError::InvalidUtf8 { command_id: 10 },
+            "invalid UTF-8 in MSP payload for command 10",
+        ),
+        (
+            MspDecodeError::CapacityExceeded {
+                command_id: 10,
+                capacity: 16,
+                requested: 17,
+            },
+            "MSP command 10 payload exceeds capacity: capacity 16, requested 17",
+        ),
+        (
+            MspDecodeError::InvalidPayload { command_id: 105 },
+            "invalid MSP payload for command 105",
         ),
     ];
     for (error, expected) in errors {
@@ -405,6 +417,44 @@ fn errors_implement_display_and_error_trait() {
     for (error, expected) in encode_errors {
         assert_eq!(error.to_string(), expected);
         assert!(error.source().is_none());
+    }
+
+    let capacity_err = uf_msp::CapacityError::new(16, 20);
+    assert_eq!(
+        capacity_err.to_string(),
+        "MSP fixed container capacity exceeded: capacity 16, requested 20"
+    );
+    assert!(capacity_err.source().is_none());
+
+    let frame_err = uf_msp::MspFrameError::InvalidPreamble;
+    let decode_err = MspDecodeError::UnsupportedCommand { command_id: 99 };
+    let encode_err = MspEncodeError::InvalidV1Command { command_id: 255 };
+
+    let top_errors = [
+        (
+            uf_msp::MspError::from(frame_err),
+            frame_err.to_string(),
+            frame_err.to_string(),
+        ),
+        (
+            uf_msp::MspError::from(decode_err),
+            decode_err.to_string(),
+            decode_err.to_string(),
+        ),
+        (
+            uf_msp::MspError::from(encode_err),
+            encode_err.to_string(),
+            encode_err.to_string(),
+        ),
+        (
+            uf_msp::MspError::from(capacity_err),
+            capacity_err.to_string(),
+            capacity_err.to_string(),
+        ),
+    ];
+    for (error, expected_display, expected_source) in top_errors {
+        assert_eq!(error.to_string(), expected_display);
+        assert_eq!(error.source().unwrap().to_string(), expected_source);
     }
 }
 
@@ -712,6 +762,7 @@ fn public_types_implement_defmt_format() {
     assert_defmt_format::<MspDecodeError>();
     assert_defmt_format::<MspEncodeError>();
     assert_defmt_format::<uf_msp::CapacityError>();
+    assert_defmt_format::<uf_msp::MspError>();
     assert_defmt_format::<uf_msp::MspApiVersion>();
     assert_defmt_format::<uf_msp::MspFcVariant>();
     assert_defmt_format::<uf_msp::MspFcVersion>();
@@ -988,6 +1039,8 @@ fn archetype_packets_roundtrip_across_all_versions_and_directions() {
 
             let frame = MspFrame::try_from(buf.as_slice()).unwrap();
             assert_eq!(MspPacket::try_from(frame).as_ref(), Ok(&packet));
+            assert_eq!(MspPacket::from_frame_bytes(&buf).as_ref(), Ok(&packet));
+            assert_eq!(MspPacket::try_from(buf.as_slice()).as_ref(), Ok(&packet));
 
             // Also verify streaming parser across chunk splits
             for split in [0, 1, expected_wire.len() / 2, expected_wire.len()] {
@@ -1011,25 +1064,121 @@ fn archetype_packets_roundtrip_across_all_versions_and_directions() {
         MspRc::try_from([1_u8, 2, 3].as_slice()),
         Err(MspDecodeError::InvalidPayload { command_id: MSP_RC })
     );
-    // > 18 channels (38 bytes) in MSP_SET_RAW_RC is rejected as InvalidPayload
+    // > 18 channels (38 bytes) in MSP_SET_RAW_RC is rejected as CapacityExceeded
     assert_eq!(
         MspSetRawRc::try_from([0_u8; 38].as_slice()),
-        Err(MspDecodeError::InvalidPayload {
-            command_id: MSP_SET_RAW_RC
+        Err(MspDecodeError::CapacityExceeded {
+            command_id: MSP_SET_RAW_RC,
+            capacity: uf_msp::MAX_RC_CHANNELS,
+            requested: 19,
         })
     );
-    // > 16 bytes in MSP_NAME / MSP_SET_NAME is rejected as InvalidPayload
+    // > 16 bytes in MSP_NAME / MSP_SET_NAME is rejected as CapacityExceeded
     assert_eq!(
         MspName::try_from(b"0123456789abcdefX".as_slice()),
-        Err(MspDecodeError::InvalidPayload {
-            command_id: MSP_NAME
+        Err(MspDecodeError::CapacityExceeded {
+            command_id: MSP_NAME,
+            capacity: uf_msp::MAX_CRAFT_NAME_LEN,
+            requested: 17,
         })
     );
     assert_eq!(
         MspSetName::try_from([0xff, 0xfe].as_slice()),
-        Err(MspDecodeError::InvalidPayload {
+        Err(MspDecodeError::InvalidUtf8 {
             command_id: MSP_SET_NAME
         })
+    );
+}
+
+#[test]
+fn error_accessors_predicates_and_unified_question_mark_ergonomics() {
+    use uf_msp::CapacityError;
+    use uf_msp::MspError;
+    use uf_msp::MspFrameError;
+    use uf_msp::MspName;
+    use uf_msp::commands::MSP_NAME;
+
+    let unsupported = MspDecodeError::UnsupportedCommand { command_id: 42 };
+    assert_eq!(unsupported.command_id(), 42);
+    assert!(unsupported.is_unsupported());
+    assert!(!unsupported.is_remote_error());
+    assert_eq!(unsupported.capacity_error(), None);
+
+    let remote = MspDecodeError::RemoteError { command_id: 108 };
+    assert_eq!(remote.command_id(), 108);
+    assert!(!remote.is_unsupported());
+    assert!(remote.is_remote_error());
+
+    let short = MspDecodeError::PayloadTooShort {
+        command_id: 109,
+        required: 6,
+        actual: 2,
+    };
+    assert_eq!(short.command_id(), 109);
+
+    let utf8 = MspDecodeError::InvalidUtf8 { command_id: 10 };
+    assert_eq!(utf8.command_id(), 10);
+
+    let cap = MspDecodeError::CapacityExceeded {
+        command_id: 10,
+        capacity: 16,
+        requested: 20,
+    };
+    assert_eq!(cap.command_id(), 10);
+    assert_eq!(cap.capacity_error(), Some(CapacityError::new(16, 20)));
+
+    let invalid = MspDecodeError::InvalidPayload { command_id: 105 };
+    assert_eq!(invalid.command_id(), 105);
+
+    assert!(
+        MspFrameError::Incomplete {
+            required: 9,
+            actual: 3
+        }
+        .is_incomplete()
+    );
+    assert!(!MspFrameError::InvalidPreamble.is_incomplete());
+
+    // End-to-end helper using uf_msp::Result and `?` across CapacityError,
+    // MspEncodeError, MspFrameError, and MspDecodeError without manual mapping.
+    fn roundtrip_craft_name(raw_name: &str, buf: &mut [u8]) -> uf_msp::Result<MspPacket> {
+        let payload = MspName::new(raw_name)?;
+        let len = write_packet_to_buffer(buf, MspVersion::V2, MspDirection::Response, 0, &payload)?;
+        MspPacket::from_frame_bytes(&buf[..len])
+    }
+
+    let mut buf = [0u8; 32];
+    let packet = roundtrip_craft_name("uflight", &mut buf).unwrap();
+    assert_eq!(
+        packet.message,
+        MspMessage::Name(MspName::new("uflight").unwrap())
+    );
+
+    assert_eq!(
+        roundtrip_craft_name("0123456789abcdefX", &mut buf),
+        Err(MspError::Capacity(CapacityError::new(16, 17)))
+    );
+
+    let mut tiny_buf = [0u8; 4];
+    assert_eq!(
+        roundtrip_craft_name("uflight", &mut tiny_buf),
+        Err(MspError::Encode(MspEncodeError::BufferTooSmall {
+            required: 16,
+            actual: 4,
+        }))
+    );
+
+    assert_eq!(
+        MspPacket::try_from(b"$Y".as_slice()),
+        Err(MspError::Frame(MspFrameError::InvalidPreamble))
+    );
+
+    let bad_utf8_frame = wire(MspVersion::V2, b'>', MSP_NAME, &[0xff, 0xfe]);
+    assert_eq!(
+        MspPacket::try_from(bad_utf8_frame.as_slice()),
+        Err(MspError::Decode(MspDecodeError::InvalidUtf8 {
+            command_id: MSP_NAME,
+        }))
     );
 }
 

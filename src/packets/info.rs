@@ -244,10 +244,9 @@ impl TryFrom<&[u8]> for MspSetName {
 
 fn copy_craft_name(name: &str) -> Result<heapless::String<MAX_CRAFT_NAME_LEN, u8>, CapacityError> {
     let mut stored = heapless::String::new();
-    stored.push_str(name).map_err(|_| CapacityError {
-        capacity: MAX_CRAFT_NAME_LEN,
-        requested: name.len(),
-    })?;
+    stored
+        .push_str(name)
+        .map_err(|_| CapacityError::new(MAX_CRAFT_NAME_LEN, name.len()))?;
     Ok(stored)
 }
 
@@ -255,9 +254,9 @@ fn decode_craft_name(
     command_id: u16,
     data: &[u8],
 ) -> Result<heapless::String<MAX_CRAFT_NAME_LEN, u8>, MspDecodeError> {
-    let invalid = MspDecodeError::InvalidPayload { command_id };
-    let name = core::str::from_utf8(data).map_err(|_| invalid)?;
-    copy_craft_name(name).map_err(|_| invalid)
+    let name =
+        core::str::from_utf8(data).map_err(|_| MspDecodeError::InvalidUtf8 { command_id })?;
+    copy_craft_name(name).map_err(|err| MspDecodeError::from_capacity(command_id, err))
 }
 
 /// Cumulative trailing fields appended to [`MspStatusExtended`] in newer Betaflight releases.
@@ -361,11 +360,8 @@ impl MspStatusExtended {
     /// Returns a capacity error if the input exceeds MAX_FLIGHT_MODE_EXT_BYTES.
     /// On error, the previous flag bytes are preserved.
     pub fn set_flight_mode_flags_ext(&mut self, flags: &[u8]) -> Result<(), CapacityError> {
-        self.flight_mode_flags_ext =
-            heapless::Vec::from_slice(flags).map_err(|_| CapacityError {
-                capacity: MAX_FLIGHT_MODE_EXT_BYTES,
-                requested: flags.len(),
-            })?;
+        self.flight_mode_flags_ext = heapless::Vec::from_slice(flags)
+            .map_err(|_| CapacityError::new(MAX_FLIGHT_MODE_EXT_BYTES, flags.len()))?;
         Ok(())
     }
 
@@ -440,8 +436,10 @@ impl MspPayload for MspStatus {
             let ext_len = usize::from(reader.read_u8()? & 0x0F);
             let ext_bytes = reader.read_bytes(ext_len)?;
             let flight_mode_flags_ext = heapless::Vec::from_slice(ext_bytes).map_err(|_| {
-                MspDecodeError::InvalidPayload {
+                MspDecodeError::CapacityExceeded {
                     command_id: Self::COMMAND_ID,
+                    capacity: MAX_FLIGHT_MODE_EXT_BYTES,
+                    requested: ext_bytes.len(),
                 }
             })?;
             let arming_disable_flags_count = reader.read_u8()?;

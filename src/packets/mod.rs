@@ -172,6 +172,18 @@ impl MspPacket {
         self.message.direction()
     }
 
+    /// Validates a standalone wire frame slice and decodes it into an owned packet.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MspError::Frame`](crate::MspError::Frame) if `bytes` is not a complete,
+    /// valid MSP frame, or [`MspError::Decode`](crate::MspError::Decode) if the command
+    /// or payload cannot be decoded.
+    pub fn from_frame_bytes(bytes: &[u8]) -> crate::Result<Self> {
+        let frame = MspFrame::try_from(bytes)?;
+        Ok(Self::try_from(frame)?)
+    }
+
     /// Serializes this packet as a complete MSP wire frame into `buffer`,
     /// returning the total frame length in bytes.
     ///
@@ -407,6 +419,14 @@ impl TryFrom<MspFrame<'_>> for MspPacket {
             flags: frame.flags(),
             message,
         })
+    }
+}
+
+impl TryFrom<&[u8]> for MspPacket {
+    type Error = crate::MspError;
+
+    fn try_from(bytes: &[u8]) -> crate::Result<Self> {
+        Self::from_frame_bytes(bytes)
     }
 }
 
