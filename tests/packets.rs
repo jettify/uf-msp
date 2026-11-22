@@ -709,6 +709,18 @@ fn public_types_implement_defmt_format() {
     assert_defmt_format::<uf_msp::CapacityError>();
     assert_defmt_format::<uf_msp::MspVec<u16, 18>>();
     assert_defmt_format::<uf_msp::MspString<16>>();
+    assert_defmt_format::<uf_msp::MspApiVersion>();
+    assert_defmt_format::<uf_msp::MspFcVariant>();
+    assert_defmt_format::<uf_msp::MspFcVersion>();
+    assert_defmt_format::<uf_msp::MspName>();
+    assert_defmt_format::<uf_msp::MspSetName>();
+    assert_defmt_format::<uf_msp::MspStatus>();
+    assert_defmt_format::<uf_msp::MspStatusExtended>();
+    assert_defmt_format::<uf_msp::MspStatusTail>();
+    assert_defmt_format::<uf_msp::MspRebootRequest>();
+    assert_defmt_format::<uf_msp::MspRebootResponse>();
+    assert_defmt_format::<uf_msp::MspRc>();
+    assert_defmt_format::<uf_msp::MspSetRawRc>();
 }
 
 #[test]
@@ -773,6 +785,260 @@ fn fixed_containers_and_packet_stack_footprint() {
         core::mem::size_of::<MspPacket>() <= 64,
         "MspPacket grew too large for embedded stacks: {} bytes",
         core::mem::size_of::<MspPacket>()
+    );
+}
+
+#[test]
+fn archetype_packets_roundtrip_across_all_versions_and_directions() {
+    use uf_msp::MspApiVersion;
+    use uf_msp::MspFcVariant;
+    use uf_msp::MspFcVersion;
+    use uf_msp::MspName;
+    use uf_msp::MspRc;
+    use uf_msp::MspRebootRequest;
+    use uf_msp::MspRebootResponse;
+    use uf_msp::MspSetName;
+    use uf_msp::MspSetRawRc;
+    use uf_msp::MspStatus;
+    use uf_msp::MspStatusExtended;
+    use uf_msp::MspStatusTail;
+    use uf_msp::MspString;
+    use uf_msp::MspVec;
+    use uf_msp::commands::*;
+
+    let status_legacy = MspStatus {
+        cycle_time_us: 125,
+        i2c_error_count: 0,
+        sensors: 0x27,
+        flight_mode_flags: 0x0000_0003,
+        current_pid_profile_index: 1,
+        extended: None,
+    };
+    // Betaflight 4.5.2 (2-byte signed core temperature without control_rate_profile_count)
+    let status_bf45 = MspStatus {
+        cycle_time_us: 125,
+        i2c_error_count: 0,
+        sensors: 0x27,
+        flight_mode_flags: 0x0000_0003,
+        current_pid_profile_index: 0,
+        extended: Some(MspStatusExtended {
+            average_system_load_percent: 30,
+            gyro_cycle_time: 0,
+            flight_mode_flags_ext: MspVec::new(),
+            arming_disable_flags_count: 28,
+            arming_disable_flags: 0,
+            config_state_flags: 0,
+            tail: Some(MspStatusTail::CoreTemp {
+                core_temp_celsius: -5,
+            }),
+        }),
+    };
+    let status_ext = MspStatus {
+        cycle_time_us: 125,
+        i2c_error_count: 2,
+        sensors: 0x2f,
+        flight_mode_flags: 0x1234_5678,
+        current_pid_profile_index: 0,
+        extended: Some(MspStatusExtended {
+            average_system_load_percent: 42,
+            gyro_cycle_time: 0,
+            flight_mode_flags_ext: MspVec::from_slice(&[0xaa, 0xbb]).unwrap(),
+            arming_disable_flags_count: 28,
+            arming_disable_flags: 0x0010_0004,
+            config_state_flags: 1,
+            tail: Some(MspStatusTail::BatteryProfile {
+                core_temp_celsius: 55,
+                control_rate_profile_count: 4,
+                battery_profile_count: 3,
+                current_battery_profile_index: 1,
+            }),
+        }),
+    };
+    assert_eq!(status_bf45.extended.unwrap().core_temp_celsius(), Some(-5));
+    assert_eq!(
+        status_bf45.extended.unwrap().control_rate_profile_count(),
+        None
+    );
+    assert_eq!(status_bf45.extended.unwrap().battery_profile(), None);
+    assert_eq!(status_ext.extended.unwrap().core_temp_celsius(), Some(55));
+    assert_eq!(
+        status_ext.extended.unwrap().control_rate_profile_count(),
+        Some(4)
+    );
+    assert_eq!(status_ext.extended.unwrap().battery_profile(), Some((3, 1)));
+
+    let cases: &[(MspMessage, Vec<u8>)] = &[
+        // 1. Out Fixed & Optional Trailing Telemetry
+        (MspMessage::ApiVersionRequest, vec![]),
+        (
+            MspMessage::ApiVersion(MspApiVersion {
+                protocol_version: 0,
+                api_version_major: 1,
+                api_version_minor: 49,
+            }),
+            vec![0, 1, 49],
+        ),
+        (MspMessage::FcVariantRequest, vec![]),
+        (
+            MspMessage::FcVariant(MspFcVariant {
+                identifier: *b"BTFL",
+            }),
+            b"BTFL".to_vec(),
+        ),
+        (MspMessage::FcVersionRequest, vec![]),
+        (
+            MspMessage::FcVersion(MspFcVersion {
+                major: 4,
+                minor: 6,
+                patch: 0,
+            }),
+            vec![4, 6, 0],
+        ),
+        (MspMessage::StatusRequest, vec![]),
+        (
+            MspMessage::Status(status_legacy),
+            vec![125, 0, 0, 0, 0x27, 0, 3, 0, 0, 0, 1],
+        ),
+        (
+            MspMessage::Status(status_bf45),
+            vec![
+                125, 0, 0, 0, 0x27, 0, 3, 0, 0, 0, 0, 30, 0, 0, 0, 0, 28, 0, 0, 0, 0, 0, 0xfb, 0xff,
+            ],
+        ),
+        (
+            MspMessage::Status(status_ext),
+            vec![
+                125, 0, 2, 0, 0x2f, 0, 0x78, 0x56, 0x34, 0x12, 0, 42, 0, 0, 0, 2, 0xaa, 0xbb, 28,
+                4, 0, 0x10, 0, 1, 55, 0, 4, 3, 1,
+            ],
+        ),
+        // 2. Out Variable-Length Array & String
+        (MspMessage::NameRequest, vec![]),
+        (
+            MspMessage::Name(MspName {
+                name: MspString::from_str("uflight").unwrap(),
+            }),
+            b"uflight".to_vec(),
+        ),
+        (MspMessage::RcRequest, vec![]),
+        (
+            MspMessage::Rc(MspRc {
+                channels: MspVec::from_slice(&[1500, 1500, 1000, 1500]).unwrap(),
+            }),
+            [1500_u16, 1500, 1000, 1500]
+                .into_iter()
+                .flat_map(u16::to_le_bytes)
+                .collect(),
+        ),
+        // 3. In Setter & Action Trigger (`<` Request with payload/empty, `>` empty ACK)
+        (
+            MspMessage::SetName(MspSetName {
+                name: MspString::from_str("race-quad").unwrap(),
+            }),
+            b"race-quad".to_vec(),
+        ),
+        (MspMessage::SetNameResponse, vec![]),
+        (
+            MspMessage::SetRawRc(MspSetRawRc {
+                channels: MspVec::from_slice(&[1000, 1200, 1400, 1600, 1800, 2000]).unwrap(),
+            }),
+            [1000_u16, 1200, 1400, 1600, 1800, 2000]
+                .into_iter()
+                .flat_map(u16::to_le_bytes)
+                .collect(),
+        ),
+        (MspMessage::SetRawRcResponse, vec![]),
+        (MspMessage::AccCalibrationRequest, vec![]),
+        (MspMessage::AccCalibrationResponse, vec![]),
+        (MspMessage::EepromWriteRequest, vec![]),
+        (MspMessage::EepromWriteResponse, vec![]),
+        // 4. Parameterized Request -> Typed Response (`MSP_REBOOT`)
+        (
+            MspMessage::RebootRequest(MspRebootRequest { mode: None }),
+            vec![],
+        ),
+        (
+            MspMessage::RebootRequest(MspRebootRequest { mode: Some(2) }),
+            vec![2],
+        ),
+        (
+            MspMessage::Reboot(MspRebootResponse {
+                mode: 0,
+                msc_ready: None,
+            }),
+            vec![0],
+        ),
+        (
+            MspMessage::Reboot(MspRebootResponse {
+                mode: 2,
+                msc_ready: Some(true),
+            }),
+            vec![2, 1],
+        ),
+    ];
+
+    for version in VERSIONS {
+        for (message, expected_payload) in cases {
+            let dir_byte = match message.direction() {
+                MspDirection::Request => b'<',
+                MspDirection::Response => b'>',
+                MspDirection::Error => b'!',
+            };
+            let expected_wire = wire(version, dir_byte, message.command_id(), expected_payload);
+            let packet = MspPacket {
+                version,
+                flags: if version == MspVersion::V1 { 0 } else { 0xa5 },
+                message: *message,
+            };
+
+            let mut buf = vec![0u8; expected_wire.len()];
+            assert_eq!(packet.to_bytes(&mut buf), Ok(expected_wire.len()));
+            assert_eq!(buf, expected_wire);
+
+            let frame = MspFrame::try_from(buf.as_slice()).unwrap();
+            assert_eq!(MspPacket::try_from(frame), Ok(packet));
+
+            // Also verify streaming parser across chunk splits
+            for split in [0, 1, expected_wire.len() / 2, expected_wire.len()] {
+                let mut parser = MspParser::<128>::new();
+                let mut decoded = Vec::new();
+                for chunk in [&expected_wire[..split], &expected_wire[split..]] {
+                    let mut input = chunk;
+                    decoded.extend(parser.packets(&mut input).map(Result::unwrap));
+                }
+                assert_eq!(decoded, [packet]);
+            }
+        }
+    }
+
+    // Verify MspFcVariant::as_str and invalid payload rejection for variable packets
+    let variant = MspFcVariant::try_from(b"BTFL".as_slice()).unwrap();
+    assert_eq!(variant.as_str(), Some("BTFL"));
+
+    // Odd byte count in MSP_RC / MSP_SET_RAW_RC is rejected as InvalidPayload
+    assert_eq!(
+        MspRc::try_from([1_u8, 2, 3].as_slice()),
+        Err(MspDecodeError::InvalidPayload { command_id: MSP_RC })
+    );
+    // > 18 channels (38 bytes) in MSP_SET_RAW_RC is rejected as InvalidPayload
+    assert_eq!(
+        MspSetRawRc::try_from([0_u8; 38].as_slice()),
+        Err(MspDecodeError::InvalidPayload {
+            command_id: MSP_SET_RAW_RC
+        })
+    );
+    // > 16 bytes in MSP_NAME / MSP_SET_NAME is rejected as InvalidPayload
+    assert_eq!(
+        MspName::try_from(b"0123456789abcdefX".as_slice()),
+        Err(MspDecodeError::InvalidPayload {
+            command_id: MSP_NAME
+        })
+    );
+    assert_eq!(
+        MspSetName::try_from([0xff, 0xfe].as_slice()),
+        Err(MspDecodeError::InvalidPayload {
+            command_id: MSP_SET_NAME
+        })
     );
 }
 

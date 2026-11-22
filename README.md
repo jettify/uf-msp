@@ -19,13 +19,13 @@ A `no_std`, allocation-free Rust library for MSP framing.
 | Packet Name | Command ID | Status | Notes |
 | :--- | :--- | :--- | :--- |
 | **Legacy MSP commands** |  |  |  |
-| `MSP_API_VERSION` | `0x01` | 🔴 | Get API version |
-| `MSP_FC_VARIANT` | `0x02` | 🔴 | Get flight controller variant |
-| `MSP_FC_VERSION` | `0x03` | 🔴 | Get flight controller version |
+| `MSP_API_VERSION` | `0x01` | 🟢 | Owned response and polling request decoding; Get API version |
+| `MSP_FC_VARIANT` | `0x02` | 🟢 | Owned response and polling request decoding; Get flight controller variant |
+| `MSP_FC_VERSION` | `0x03` | 🟢 | Owned response and polling request decoding; Get flight controller version |
 | `MSP_BOARD_INFO` | `0x04` | 🔴 | Get board information |
 | `MSP_BUILD_INFO` | `0x05` | 🔴 | Get build information |
-| `MSP_NAME` | `0x0A` | 🔴 | Returns user set board name - betaflight |
-| `MSP_SET_NAME` | `0x0B` | 🔴 | Sets board name - betaflight |
+| `MSP_NAME` | `0x0A` | 🟢 | Owned response and polling request decoding; Returns user set board name - betaflight |
+| `MSP_SET_NAME` | `0x0B` | 🟢 | Owned setter request and ACK response decoding; Sets board name - betaflight |
 | `MSP_BATTERY_CONFIG` | `0x20` | 🔴 | Get battery configuration |
 | `MSP_SET_BATTERY_CONFIG` | `0x21` | 🔴 | Set battery configuration |
 | `MSP_MODE_RANGES` | `0x22` | 🔴 | Returns all mode ranges |
@@ -58,7 +58,7 @@ A `no_std`, allocation-free Rust library for MSP framing.
 | `MSP_SET_ARMING_CONFIG` | `0x3E` | 🔴 | Set arming configuration |
 | `MSP_RX_MAP` | `0x40` | 🔴 | Get RX map (also returns number of channels total) |
 | `MSP_SET_RX_MAP` | `0x41` | 🔴 | Set RX map, numchannels to set comes from MSP_RX_MAP |
-| `MSP_REBOOT` | `0x44` | 🔴 | Reboot settings |
+| `MSP_REBOOT` | `0x44` | 🟢 | Owned parameterized request and response decoding; Reboot settings |
 | `MSP_DATAFLASH_SUMMARY` | `0x46` | 🔴 | Get description of dataflash chip |
 | `MSP_DATAFLASH_READ` | `0x47` | 🔴 | Get content of dataflash chip |
 | `MSP_DATAFLASH_ERASE` | `0x48` | 🔴 | Erase dataflash chip |
@@ -87,15 +87,15 @@ A `no_std`, allocation-free Rust library for MSP framing.
 | `MSP_SET_SENSOR_CONFIG` | `0x61` | 🔴 | Set sensor configuration |
 | `MSP_CAMERA_CONTROL` | `0x62` | 🔴 | Camera control |
 | `MSP_SET_ARMING_DISABLED` | `0x63` | 🔴 | Enable/disable arming |
-| `MSP_STATUS` | `0x65` | 🔴 | Cycletime & errors_count & sensor present & box activation & current setting number |
-| `MSP_RAW_IMU` | `0x66` | 🔴 | 9 DOF |
+| `MSP_STATUS` | `0x65` | 🟢 | Owned response (legacy & Betaflight extended) and polling request decoding |
+| `MSP_RAW_IMU` | `0x66` | 🟢 | Owned response and polling request decoding; 9 DOF |
 | `MSP_SERVO` | `0x67` | 🔴 | Servos |
 | `MSP_MOTOR` | `0x68` | 🔴 | Motors |
-| `MSP_RC` | `0x69` | 🔴 | RC channels and more |
+| `MSP_RC` | `0x69` | 🟢 | Owned response and polling request decoding; RC channels and more |
 | `MSP_RAW_GPS` | `0x6A` | 🔴 | Fix, numsat, lat, lon, alt, speed, ground course |
 | `MSP_COMP_GPS` | `0x6B` | 🔴 | Distance home, direction home |
-| `MSP_ATTITUDE` | `0x6C` | 🔴 | 2 angles 1 heading |
-| `MSP_ALTITUDE` | `0x6D` | 🔴 | Altitude, variometer |
+| `MSP_ATTITUDE` | `0x6C` | 🟢 | Owned response and polling request decoding; 2 angles 1 heading |
+| `MSP_ALTITUDE` | `0x6D` | 🟢 | Owned response and polling request decoding; altitude, variometer |
 | `MSP_ANALOG` | `0x6E` | 🔴 | Vbat, powermetersum, rssi if available on RX |
 | `MSP_RC_TUNING` | `0x6F` | 🔴 | RC rate, rc expo, rollpitch rate, yaw rate, dyn throttle PID |
 | `MSP_PID` | `0x70` | 🔴 | P I D coeff (9 are used currently) |
@@ -145,12 +145,12 @@ A `no_std`, allocation-free Rust library for MSP framing.
 | `MSP_TX_INFO` | `0xBB` | 🔴 | Get runtime information for TX lua scripts |
 | `MSP_SET_OSD_CANVAS` | `0xBC` | 🔴 | Set OSD canvas size COLSxROWS |
 | `MSP_OSD_CANVAS` | `0xBD` | 🔴 | Get OSD canvas size COLSxROWS |
-| `MSP_SET_RAW_RC` | `0xC8` | 🔴 | 8 rc chan |
+| `MSP_SET_RAW_RC` | `0xC8` | 🟢 | Owned setter request and ACK response decoding; up to 18 RC channels |
 | `MSP_SET_RAW_GPS` | `0xC9` | 🔴 | Fix, numsat, lat, lon, alt, speed |
 | `MSP_SET_PID` | `0xCA` | 🔴 | P I D coeff (9 are used currently) |
 | `MSP_SET_WING` | `0xCB` | 🔴 | Set WING settings |
 | `MSP_SET_RC_TUNING` | `0xCC` | 🔴 | RC rate, rc expo, rollpitch rate, yaw rate, dyn throttle PID, yaw expo |
-| `MSP_ACC_CALIBRATION` | `0xCD` | 🔴 | No param - calibrate accelerometer |
+| `MSP_ACC_CALIBRATION` | `0xCD` | 🟢 | Owned trigger request and ACK response decoding; calibrate accelerometer |
 | `MSP_MAG_CALIBRATION` | `0xCE` | 🔴 | No param - calibrate magnetometer |
 | `MSP_RESET_CONF` | `0xD0` | 🔴 | No param - reset settings |
 | `MSP_SET_WP` | `0xD1` | 🔴 | Sets a given WP (WP#,lat, lon, alt, flags) |
@@ -182,7 +182,7 @@ A `no_std`, allocation-free Rust library for MSP framing.
 | `MSP_RTC` | `0xF7` | 🔴 | Get the RTC clock |
 | `MSP_SET_BOARD_INFO` | `0xF8` | 🔴 | Set the board information |
 | `MSP_SET_SIGNATURE` | `0xF9` | 🔴 | Set the signature of the board and serial number |
-| `MSP_EEPROM_WRITE` | `0xFA` | 🔴 | Write settings to EEPROM |
+| `MSP_EEPROM_WRITE` | `0xFA` | 🟢 | Owned trigger request and ACK response decoding; Write settings to EEPROM |
 | `MSP_DEBUGMSG` | `0xFD` | 🔴 | debug string buffer |
 | `MSP_DEBUG` | `0xFE` | 🔴 | debug1,debug2,debug3,debug4 |
 | **MSPv2 common commands** |  |  |  |
