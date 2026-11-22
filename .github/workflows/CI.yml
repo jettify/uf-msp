@@ -22,6 +22,10 @@ jobs:
       run: sudo apt-get update && sudo apt install -y libudev-dev
     - name: Run tests
       run: make ci
+    - name: Check no_std target
+      run: |
+        rustup target add thumbv7em-none-eabihf
+        cargo check --locked --lib --all-features --target thumbv7em-none-eabihf
     - name: Generate code coverage
       run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
     - name: Upload coverage to Codecov

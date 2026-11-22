@@ -1034,7 +1034,11 @@ fn status_packets_roundtrip_across_all_versions_and_directions() {
 }
 
 fn assert_packets_roundtrip(cases: &[(MspMessage, Vec<u8>)]) {
-    for version in VERSIONS {
+    assert_packets_roundtrip_on_versions(&VERSIONS, cases);
+}
+
+fn assert_packets_roundtrip_on_versions(versions: &[MspVersion], cases: &[(MspMessage, Vec<u8>)]) {
+    for &version in versions {
         for (message, expected_payload) in cases {
             let dir_byte = match message.direction() {
                 MspDirection::Request => b'<',
@@ -1315,5 +1319,212 @@ fn frame_encoding_validates_v1_commands_and_payload_limits() {
             max: 65_529,
             actual: 65_530,
         })
+    );
+}
+
+#[test]
+fn gps_and_power_packets_roundtrip_with_legacy_and_extended_payloads() {
+    use uf_msp::MspAnalog;
+    use uf_msp::MspBatteryState;
+    use uf_msp::MspCompGps;
+    use uf_msp::MspRawGps;
+    use uf_msp::MspRawGpsDop;
+    use uf_msp::MspRawGpsExtended;
+
+    let legacy_gps = MspRawGps {
+        fix: 2,
+        satellites: 9,
+        latitude_e7: -1234,
+        longitude_e7: 5678,
+        altitude_m: 300,
+        ground_speed_cm_s: 513,
+        ground_course_decidegrees: 2700,
+        dop: None,
+    };
+    let legacy_gps_bytes = [
+        2, 9, 0x2e, 0xfb, 0xff, 0xff, 0x2e, 0x16, 0, 0, 0x2c, 1, 1, 2, 0x8c, 0x0a,
+    ];
+    let mut gps_with_dop = legacy_gps_bytes.to_vec();
+    gps_with_dop.extend([0x23, 1]);
+    let mut extended_gps = gps_with_dop.clone();
+    extended_gps.extend([78, 0, 0x90, 1, 15]);
+
+    let analog = MspAnalog {
+        voltage_decivolts: 168,
+        consumed_mah: 321,
+        rssi: 1023,
+        current_centiamps: -300,
+        voltage_centivolts: None,
+    };
+    let battery = MspBatteryState {
+        cell_count: 4,
+        capacity_mah: 1500,
+        voltage_decivolts: 168,
+        consumed_mah: 321,
+        current_centiamps: -300,
+        state: 2,
+        voltage_centivolts: None,
+    };
+    assert_packets_roundtrip_on_versions(
+        &VERSIONS,
+        &[
+            (MspMessage::RawGpsRequest, vec![]),
+            (MspMessage::RawGps(legacy_gps), legacy_gps_bytes.to_vec()),
+            (
+                MspMessage::RawGps(MspRawGps {
+                    dop: Some(MspRawGpsDop {
+                        dop_centi: 291,
+                        extended: None,
+                    }),
+                    ..legacy_gps
+                }),
+                gps_with_dop,
+            ),
+            (
+                MspMessage::RawGps(MspRawGps {
+                    dop: Some(MspRawGpsDop {
+                        dop_centi: 291,
+                        extended: Some(MspRawGpsExtended {
+                            hdop_centi: 78,
+                            vdop_centi: 400,
+                            satellites_in_view: 15,
+                        }),
+                    }),
+                    ..legacy_gps
+                }),
+                extended_gps,
+            ),
+            (MspMessage::CompGpsRequest, vec![]),
+            (
+                MspMessage::CompGps(MspCompGps {
+                    distance_to_home_m: 321,
+                    direction_to_home_degrees: -90,
+                    update: 1,
+                }),
+                vec![0x41, 1, 0xa6, 0xff, 1],
+            ),
+            (MspMessage::AnalogRequest, vec![]),
+            (
+                MspMessage::Analog(analog),
+                vec![168, 0x41, 1, 0xff, 3, 0xd4, 0xfe],
+            ),
+            (
+                MspMessage::Analog(MspAnalog {
+                    voltage_centivolts: Some(1678),
+                    ..analog
+                }),
+                vec![168, 0x41, 1, 0xff, 3, 0xd4, 0xfe, 0x8e, 6],
+            ),
+            (MspMessage::BatteryStateRequest, vec![]),
+            (
+                MspMessage::BatteryState(battery),
+                vec![4, 0xdc, 5, 168, 0x41, 1, 0xd4, 0xfe, 2],
+            ),
+            (
+                MspMessage::BatteryState(MspBatteryState {
+                    voltage_centivolts: Some(1678),
+                    ..battery
+                }),
+                vec![4, 0xdc, 5, 168, 0x41, 1, 0xd4, 0xfe, 2, 0x8e, 6],
+            ),
+        ],
+    );
+}
+
+#[test]
+fn gps_and_power_packets_reject_truncated_extensions() {
+    use uf_msp::commands::MSP_ANALOG;
+    use uf_msp::commands::MSP_BATTERY_STATE;
+    use uf_msp::commands::MSP_RAW_GPS;
+
+    for (command_id, actual, required) in [
+        (MSP_RAW_GPS, 15, 16),
+        (MSP_RAW_GPS, 17, 18),
+        (MSP_RAW_GPS, 19, 20),
+        (MSP_RAW_GPS, 21, 22),
+        (MSP_RAW_GPS, 22, 23),
+        (MSP_ANALOG, 8, 9),
+        (MSP_BATTERY_STATE, 10, 11),
+    ] {
+        let frame = wire(MspVersion::V2, b'>', command_id, &[0; 23][..actual]);
+        assert_eq!(
+            MspPacket::from_frame_bytes(&frame),
+            Err(uf_msp::MspError::Decode(MspDecodeError::PayloadTooShort {
+                command_id,
+                required,
+                actual,
+            }))
+        );
+    }
+}
+
+#[test]
+fn device_and_battery_profile_packets_roundtrip_on_supported_versions() {
+    use uf_msp::MspBatteryProfile;
+    use uf_msp::MspBatteryProfileRequest;
+    use uf_msp::MspFeatureConfig;
+    use uf_msp::MspUid;
+    use uf_msp::commands::MSP2_BATTERY_PROFILE;
+
+    assert_packets_roundtrip_on_versions(
+        &VERSIONS,
+        &[
+            (MspMessage::UidRequest, vec![]),
+            (
+                MspMessage::Uid(MspUid {
+                    words: [0x1234_5678, 0x90ab_cdef, 0xfe01_0203],
+                }),
+                vec![
+                    0x78, 0x56, 0x34, 0x12, 0xef, 0xcd, 0xab, 0x90, 3, 2, 1, 0xfe,
+                ],
+            ),
+            (MspMessage::FeatureConfigRequest, vec![]),
+            (
+                MspMessage::FeatureConfig(MspFeatureConfig {
+                    enabled_features: 0x8004_0002,
+                }),
+                vec![2, 0, 4, 0x80],
+            ),
+        ],
+    );
+
+    let active = MspMessage::BatteryProfileRequest(MspBatteryProfileRequest {
+        profile_index: None,
+    });
+    assert_eq!(
+        MspPacket {
+            version: MspVersion::V1,
+            flags: 0,
+            message: active.clone(),
+        }
+        .to_bytes(&mut [0; 32]),
+        Err(MspEncodeError::InvalidV1Command {
+            command_id: MSP2_BATTERY_PROFILE,
+        })
+    );
+    assert_packets_roundtrip_on_versions(
+        &[MspVersion::V2, MspVersion::V2OverV1],
+        &[
+            (active, vec![]),
+            (
+                MspMessage::BatteryProfileRequest(MspBatteryProfileRequest {
+                    profile_index: Some(0),
+                }),
+                vec![0],
+            ),
+            (
+                MspMessage::BatteryProfile(MspBatteryProfile {
+                    profile_index: 2,
+                    min_cell_centivolts: 330,
+                    max_cell_centivolts: 430,
+                    warning_cell_centivolts: 350,
+                    full_cell_centivolts: 410,
+                    capacity_mah: 1500,
+                    forced_cell_count: 4,
+                    consumption_warning_percent: 20,
+                }),
+                vec![2, 0x4a, 1, 0xae, 1, 0x5e, 1, 0x9a, 1, 0xdc, 5, 4, 20],
+            ),
+        ],
     );
 }

@@ -1,4 +1,5 @@
 mod info;
+mod power;
 mod rc;
 mod telemetry;
 
@@ -7,6 +8,7 @@ pub use info::MAX_FLIGHT_MODE_EXT_BYTES;
 pub use info::MspApiVersion;
 pub use info::MspFcVariant;
 pub use info::MspFcVersion;
+pub use info::MspFeatureConfig;
 pub use info::MspName;
 pub use info::MspRebootRequest;
 pub use info::MspRebootResponse;
@@ -14,11 +16,20 @@ pub use info::MspSetName;
 pub use info::MspStatus;
 pub use info::MspStatusExtended;
 pub use info::MspStatusTail;
+pub use info::MspUid;
+pub use power::MspAnalog;
+pub use power::MspBatteryProfile;
+pub use power::MspBatteryProfileRequest;
+pub use power::MspBatteryState;
 pub use rc::MAX_RC_CHANNELS;
 pub use rc::MspRc;
 pub use rc::MspSetRawRc;
 pub use telemetry::MspAltitude;
 pub use telemetry::MspAttitude;
+pub use telemetry::MspCompGps;
+pub use telemetry::MspRawGps;
+pub use telemetry::MspRawGpsDop;
+pub use telemetry::MspRawGpsExtended;
 pub use telemetry::MspRawImu;
 
 use crate::MspDecodeError;
@@ -30,18 +41,25 @@ use crate::MspPayload;
 use crate::MspVersion;
 use crate::commands::MSP_ACC_CALIBRATION;
 use crate::commands::MSP_ALTITUDE;
+use crate::commands::MSP_ANALOG;
 use crate::commands::MSP_API_VERSION;
 use crate::commands::MSP_ATTITUDE;
+use crate::commands::MSP_BATTERY_STATE;
+use crate::commands::MSP_COMP_GPS;
 use crate::commands::MSP_EEPROM_WRITE;
 use crate::commands::MSP_FC_VARIANT;
 use crate::commands::MSP_FC_VERSION;
+use crate::commands::MSP_FEATURE_CONFIG;
 use crate::commands::MSP_NAME;
+use crate::commands::MSP_RAW_GPS;
 use crate::commands::MSP_RAW_IMU;
 use crate::commands::MSP_RC;
 use crate::commands::MSP_REBOOT;
 use crate::commands::MSP_SET_NAME;
 use crate::commands::MSP_SET_RAW_RC;
 use crate::commands::MSP_STATUS;
+use crate::commands::MSP_UID;
+use crate::commands::MSP2_BATTERY_PROFILE;
 use crate::write_packet_to_buffer;
 use crate::write_raw_frame_to_buffer;
 
@@ -205,20 +223,27 @@ macro_rules! define_msp_messages {
 }
 
 define_msp_messages! {
-    MSP_API_VERSION     => (ApiVersionRequest, ApiVersion(MspApiVersion)),
-    MSP_FC_VARIANT      => (FcVariantRequest, FcVariant(MspFcVariant)),
-    MSP_FC_VERSION      => (FcVersionRequest, FcVersion(MspFcVersion)),
-    MSP_STATUS          => (StatusRequest, Status(MspStatus)),
-    MSP_NAME            => (NameRequest, Name(MspName)),
-    MSP_RAW_IMU         => (RawImuRequest, RawImu(MspRawImu)),
-    MSP_ATTITUDE        => (AttitudeRequest, Attitude(MspAttitude)),
-    MSP_ALTITUDE        => (AltitudeRequest, Altitude(MspAltitude)),
-    MSP_RC              => (RcRequest, Rc(MspRc)),
-    MSP_SET_NAME        => (SetName(MspSetName), SetNameResponse),
-    MSP_SET_RAW_RC      => (SetRawRc(MspSetRawRc), SetRawRcResponse),
-    MSP_REBOOT          => (RebootRequest(MspRebootRequest), Reboot(MspRebootResponse)),
-    MSP_ACC_CALIBRATION => (AccCalibrationRequest, AccCalibrationResponse),
-    MSP_EEPROM_WRITE    => (EepromWriteRequest, EepromWriteResponse),
+    MSP_API_VERSION      => (ApiVersionRequest, ApiVersion(MspApiVersion)),
+    MSP_FC_VARIANT       => (FcVariantRequest, FcVariant(MspFcVariant)),
+    MSP_FC_VERSION       => (FcVersionRequest, FcVersion(MspFcVersion)),
+    MSP_STATUS           => (StatusRequest, Status(MspStatus)),
+    MSP_NAME             => (NameRequest, Name(MspName)),
+    MSP_RAW_IMU          => (RawImuRequest, RawImu(MspRawImu)),
+    MSP_ATTITUDE         => (AttitudeRequest, Attitude(MspAttitude)),
+    MSP_ALTITUDE         => (AltitudeRequest, Altitude(MspAltitude)),
+    MSP_RC               => (RcRequest, Rc(MspRc)),
+    MSP_FEATURE_CONFIG   => (FeatureConfigRequest, FeatureConfig(MspFeatureConfig)),
+    MSP_UID              => (UidRequest, Uid(MspUid)),
+    MSP_RAW_GPS          => (RawGpsRequest, RawGps(MspRawGps)),
+    MSP_COMP_GPS         => (CompGpsRequest, CompGps(MspCompGps)),
+    MSP_ANALOG           => (AnalogRequest, Analog(MspAnalog)),
+    MSP_BATTERY_STATE    => (BatteryStateRequest, BatteryState(MspBatteryState)),
+    MSP2_BATTERY_PROFILE => (BatteryProfileRequest(MspBatteryProfileRequest), BatteryProfile(MspBatteryProfile)),
+    MSP_SET_NAME         => (SetName(MspSetName), SetNameResponse),
+    MSP_SET_RAW_RC       => (SetRawRc(MspSetRawRc), SetRawRcResponse),
+    MSP_REBOOT           => (RebootRequest(MspRebootRequest), Reboot(MspRebootResponse)),
+    MSP_ACC_CALIBRATION  => (AccCalibrationRequest, AccCalibrationResponse),
+    MSP_EEPROM_WRITE     => (EepromWriteRequest, EepromWriteResponse),
 }
 
 /// An owned decoded packet, independent of the parser and its input bytes.

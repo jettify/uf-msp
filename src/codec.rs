@@ -30,12 +30,12 @@ pub trait MspPayload: Sized {
         Self::MIN_PAYLOAD_SIZE
     }
 
-    /// Creates a payload instance from a byte slice, ignoring trailing extension bytes.
+    /// Creates a payload instance from a byte slice using the command's wire layout.
     ///
     /// # Errors
     ///
     /// Returns [`MspDecodeError::PayloadTooShort`] if `data` has fewer than
-    /// [`Self::MIN_PAYLOAD_SIZE`] bytes.
+    /// [`Self::MIN_PAYLOAD_SIZE`] bytes or ends partway through a required field.
     fn from_bytes(data: &[u8]) -> Result<Self, MspDecodeError>;
 
     /// Writes this payload into the beginning of `buffer`, returning the number of bytes written.

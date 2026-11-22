@@ -2,8 +2,9 @@
 name = "uf-msp"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
 
-description = "A `no_std` Rust library"
+description = "Allocation-free MultiWii Serial Protocol framing and typed packets for embedded Rust"
 categories = [
   "embedded",
   "no-std",

@@ -7,10 +7,12 @@ use crate::codec::PayloadWriter;
 use crate::commands::MSP_API_VERSION;
 use crate::commands::MSP_FC_VARIANT;
 use crate::commands::MSP_FC_VERSION;
+use crate::commands::MSP_FEATURE_CONFIG;
 use crate::commands::MSP_NAME;
 use crate::commands::MSP_REBOOT;
 use crate::commands::MSP_SET_NAME;
 use crate::commands::MSP_STATUS;
+use crate::commands::MSP_UID;
 
 /// Maximum craft name length in bytes transmitted by `MSP_NAME` / `MSP_SET_NAME`.
 pub const MAX_CRAFT_NAME_LEN: usize = 16;
@@ -561,6 +563,60 @@ impl MspPayload for MspRebootResponse {
         if let Some(ready) = self.msc_ready {
             writer.write_bool(ready)?;
         }
+        Ok(writer.written())
+    }
+}
+
+/// The three 32-bit device identifier words returned by `MSP_UID`, in wire order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct MspUid {
+    pub words: [u32; 3],
+}
+
+impl MspPayload for MspUid {
+    const COMMAND_ID: u16 = MSP_UID;
+    const MIN_PAYLOAD_SIZE: usize = 12;
+
+    fn from_bytes(data: &[u8]) -> Result<Self, MspDecodeError> {
+        let mut reader =
+            PayloadReader::with_min_size(Self::COMMAND_ID, data, Self::MIN_PAYLOAD_SIZE)?;
+        Ok(Self {
+            words: [reader.read_u32()?, reader.read_u32()?, reader.read_u32()?],
+        })
+    }
+
+    fn to_bytes(&self, buffer: &mut [u8]) -> Result<usize, MspEncodeError> {
+        let mut writer = PayloadWriter::with_min_size(buffer, Self::MIN_PAYLOAD_SIZE)?;
+        for word in self.words {
+            writer.write_u32(word)?;
+        }
+        Ok(writer.written())
+    }
+}
+
+/// Firmware-specific enabled feature flags from `MSP_FEATURE_CONFIG`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct MspFeatureConfig {
+    pub enabled_features: u32,
+}
+
+impl MspPayload for MspFeatureConfig {
+    const COMMAND_ID: u16 = MSP_FEATURE_CONFIG;
+    const MIN_PAYLOAD_SIZE: usize = 4;
+
+    fn from_bytes(data: &[u8]) -> Result<Self, MspDecodeError> {
+        let mut reader =
+            PayloadReader::with_min_size(Self::COMMAND_ID, data, Self::MIN_PAYLOAD_SIZE)?;
+        Ok(Self {
+            enabled_features: reader.read_u32()?,
+        })
+    }
+
+    fn to_bytes(&self, buffer: &mut [u8]) -> Result<usize, MspEncodeError> {
+        let mut writer = PayloadWriter::with_min_size(buffer, Self::MIN_PAYLOAD_SIZE)?;
+        writer.write_u32(self.enabled_features)?;
         Ok(writer.written())
     }
 }

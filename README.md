@@ -5,7 +5,8 @@
 [![crates.io](https://img.shields.io/crates/v/uf-msp)](https://crates.io/crates/uf-msp)
 [![docs.rs](https://img.shields.io/docsrs/uf-msp)](https://docs.rs/uf-msp/latest/uf_msp/)
 
-A `no_std`, allocation-free Rust library for MSP framing.
+A `no_std`, allocation-free Rust library for MSP framing and owned packet decoding.
+Requires Rust 1.88 or newer.
 
 ## Implementation status
 
@@ -30,7 +31,7 @@ A `no_std`, allocation-free Rust library for MSP framing.
 | `MSP_SET_BATTERY_CONFIG` | `0x21` | 🔴 | Set battery configuration |
 | `MSP_MODE_RANGES` | `0x22` | 🔴 | Returns all mode ranges |
 | `MSP_SET_MODE_RANGE` | `0x23` | 🔴 | Sets a single mode range |
-| `MSP_FEATURE_CONFIG` | `0x24` | 🔴 | Get feature configuration |
+| `MSP_FEATURE_CONFIG` | `0x24` | 🟢 | Polling request and enabled feature flags |
 | `MSP_SET_FEATURE_CONFIG` | `0x25` | 🔴 | Set feature configuration |
 | `MSP_BOARD_ALIGNMENT_CONFIG` | `0x26` | 🔴 | Get board alignment configuration |
 | `MSP_SET_BOARD_ALIGNMENT_CONFIG` | `0x27` | 🔴 | Set board alignment configuration |
@@ -92,11 +93,11 @@ A `no_std`, allocation-free Rust library for MSP framing.
 | `MSP_SERVO` | `0x67` | 🔴 | Servos |
 | `MSP_MOTOR` | `0x68` | 🔴 | Motors |
 | `MSP_RC` | `0x69` | 🟢 | Owned response and polling request decoding; RC channels and more |
-| `MSP_RAW_GPS` | `0x6A` | 🔴 | Fix, numsat, lat, lon, alt, speed, ground course |
-| `MSP_COMP_GPS` | `0x6B` | 🔴 | Distance home, direction home |
+| `MSP_RAW_GPS` | `0x6A` | 🟢 | Polling request and position, ground velocity, and optional Betaflight DOP fields |
+| `MSP_COMP_GPS` | `0x6B` | 🟢 | Polling request and distance and heading to home |
 | `MSP_ATTITUDE` | `0x6C` | 🟢 | Owned response and polling request decoding; 2 angles 1 heading |
 | `MSP_ALTITUDE` | `0x6D` | 🟢 | Owned response and polling request decoding; altitude, variometer |
-| `MSP_ANALOG` | `0x6E` | 🔴 | Vbat, powermetersum, rssi if available on RX |
+| `MSP_ANALOG` | `0x6E` | 🟢 | Polling request and voltage, current, consumption, and RSSI |
 | `MSP_RC_TUNING` | `0x6F` | 🔴 | RC rate, rc expo, rollpitch rate, yaw rate, dyn throttle PID |
 | `MSP_PID` | `0x70` | 🔴 | P I D coeff (9 are used currently) |
 | `MSP_BOXNAMES` | `0x74` | 🔴 | The aux switch names |
@@ -112,7 +113,7 @@ A `no_std`, allocation-free Rust library for MSP framing.
 | `MSP_LED_STRIP_MODECOLOR` | `0x7F` | 🔴 | Get LED strip mode_color settings |
 | `MSP_VOLTAGE_METERS` | `0x80` | 🔴 | Voltage (per meter) |
 | `MSP_CURRENT_METERS` | `0x81` | 🔴 | Amperage (per meter) |
-| `MSP_BATTERY_STATE` | `0x82` | 🔴 | Connected/Disconnected, Voltage, Current Used |
+| `MSP_BATTERY_STATE` | `0x82` | 🟢 | Polling request and Betaflight battery telemetry |
 | `MSP_MOTOR_CONFIG` | `0x83` | 🔴 | Motor configuration (min/max throttle, etc) |
 | `MSP_GPS_CONFIG` | `0x84` | 🔴 | GPS configuration |
 | `MSP_COMPASS_CONFIG` | `0x85` | 🔴 | Compass configuration |
@@ -129,7 +130,7 @@ A `no_std`, allocation-free Rust library for MSP framing.
 | `MSP_CALCULATE_SIMPLIFIED_DTERM` | `0x90` | 🔴 | Calculate D term filter values based on sliders without saving |
 | `MSP_VALIDATE_SIMPLIFIED_TUNING` | `0x91` | 🔴 | Returns array of true/false showing which simplified tuning groups match values |
 | `MSP_STATUS_EX` | `0x96` | 🔴 | Cycletime, errors_count, CPU load, sensor present etc |
-| `MSP_UID` | `0xA0` | 🔴 | Unique device ID |
+| `MSP_UID` | `0xA0` | 🟢 | Polling request and three device identifier words |
 | `MSP_GPSSVINFO` | `0xA4` | 🔴 | Get Signal Strength (only U-Blox) |
 | `MSP_GPSSTATISTICS` | `0xA6` | 🔴 | Get GPS debugging data |
 | `MSP_ATTITUDE_QUATERNION` | `0xA7` | 🔴 | Orientation quaternion components (w, x, y, z) |
@@ -205,7 +206,7 @@ A `no_std`, allocation-free Rust library for MSP framing.
 | `MSP2_SENSOR_OPTICALFLOW` | `0x300B` | 🔴 |  |
 | `MSP2_MCU_INFO` | `0x300C` | 🔴 |  |
 | `MSP2_GYRO_SENSOR_ACTIVE` | `0x300D` | 🔴 |  |
-| `MSP2_BATTERY_PROFILE` | `0x300E` | 🔴 |  |
+| `MSP2_BATTERY_PROFILE` | `0x300E` | 🟢 | Betaflight profile query with optional index, voltage thresholds, and capacity |
 | `MSP2_SET_BATTERY_PROFILE` | `0x300F` | 🔴 |  |
 | `MSP2_CLI_SETTING` | `0x3010` | 🔴 |  |
 | `MSP2_CLI_SETTING_INFO` | `0x3011` | 🔴 |  |
