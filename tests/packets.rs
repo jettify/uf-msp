@@ -10,11 +10,10 @@ use uf_msp::MspParser;
 use uf_msp::MspPayload;
 use uf_msp::MspRawImu;
 use uf_msp::MspVersion;
-use uf_msp::commands::MSP_ALTITUDE;
 use uf_msp::commands::MSP_ATTITUDE;
-use uf_msp::commands::MSP_RAW_IMU;
 use uf_msp::crc8_dvbs2_slice;
 use uf_msp::write_packet_to_buffer;
+use uf_msp::write_raw_frame_to_buffer;
 use uf_msp::write_request_to_buffer;
 
 const VERSIONS: [MspVersion; 3] = [MspVersion::V1, MspVersion::V2, MspVersion::V2OverV1];
@@ -434,9 +433,74 @@ fn manual_decoding_with_question_mark() {
 
 #[test]
 fn public_command_constants_match_wire_ids() {
+    use uf_msp::commands::*;
+
+    assert_eq!(MSP_API_VERSION, 1);
+    assert_eq!(MSP_FC_VARIANT, 2);
+    assert_eq!(MSP_FC_VERSION, 3);
+    assert_eq!(MSP_BOARD_INFO, 4);
+    assert_eq!(MSP_BUILD_INFO, 5);
+    assert_eq!(MSP_NAME, 10);
+    assert_eq!(MSP_SET_NAME, 11);
+    assert_eq!(MSP_BATTERY_CONFIG, 32);
+    assert_eq!(MSP_SET_BATTERY_CONFIG, 33);
+    assert_eq!(MSP_ARMING_CONFIG, 61);
+    assert_eq!(MSP_SET_ARMING_CONFIG, 62);
+    assert_eq!(MSP_RX_MAP, 64);
+    assert_eq!(MSP_REBOOT, 68);
+    assert_eq!(MSP_DATAFLASH_READ, 71);
+    assert_eq!(MSP_VTX_CONFIG, 88);
+    assert_eq!(MSP_SET_VTX_CONFIG, 89);
+    assert_eq!(MSP_ADVANCED_CONFIG, 90);
+    assert_eq!(MSP_SET_ARMING_DISABLED, 99);
+    assert_eq!(MSP_STATUS, 101);
     assert_eq!(MSP_RAW_IMU, 102);
+    assert_eq!(MSP_SERVO, 103);
+    assert_eq!(MSP_MOTOR, 104);
+    assert_eq!(MSP_RC, 105);
+    assert_eq!(MSP_RAW_GPS, 106);
+    assert_eq!(MSP_COMP_GPS, 107);
     assert_eq!(MSP_ATTITUDE, 108);
     assert_eq!(MSP_ALTITUDE, 109);
+    assert_eq!(MSP_ANALOG, 110);
+    assert_eq!(MSP_RC_TUNING, 111);
+    assert_eq!(MSP_PID, 112);
+    assert_eq!(MSP_BOXNAMES, 116);
+    assert_eq!(MSP_PIDNAMES, 117);
+    assert_eq!(MSP_WP, 118);
+    assert_eq!(MSP_BOXIDS, 119);
+    assert_eq!(MSP_BATTERY_STATE, 130);
+    assert_eq!(MSP_MOTOR_TELEMETRY, 139);
+    assert_eq!(MSP_SIMPLIFIED_TUNING, 140);
+    assert_eq!(MSP_VALIDATE_SIMPLIFIED_TUNING, 145);
+    assert_eq!(MSP_STATUS_EX, 150);
+    assert_eq!(MSP_UID, 160);
+    assert_eq!(MSP_ATTITUDE_QUATERNION, 167);
+    assert_eq!(MSP_PITOT, 170);
+    assert_eq!(MSP_OSD_VIDEO_CONFIG, 180);
+    assert_eq!(MSP_OSD_CANVAS, 189);
+    assert_eq!(MSP_SET_RAW_RC, 200);
+    assert_eq!(MSP_SET_PID, 202);
+    assert_eq!(MSP_ACC_CALIBRATION, 205);
+    assert_eq!(MSP_MAG_CALIBRATION, 206);
+    assert_eq!(MSP_RESET_CONF, 208);
+    assert_eq!(MSP_SET_MOTOR, 214);
+    assert_eq!(MSP_SET_VTXTABLE_POWERLEVEL, 228);
+    assert_eq!(MSP_MULTIPLE_MSP, 230);
+    assert_eq!(MSP_EEPROM_WRITE, 250);
+    assert_eq!(MSP_DEBUGMSG, 253);
+    assert_eq!(MSP_DEBUG, 254);
+    assert_eq!(MSP_V2_FRAME, 255);
+
+    assert_eq!(MSP2_COMMON_SERIAL_CONFIG, 0x1009);
+    assert_eq!(MSP2_SENSOR_RANGEFINDER_LIDARMT, 0x1F01);
+    assert_eq!(MSP2_SENSOR_OPTICALFLOW_MT, 0x1F02);
+    assert_eq!(MSP2_SENSOR_GPS, 0x1F03);
+    assert_eq!(MSP2_BETAFLIGHT_BIND, 0x3000);
+    assert_eq!(MSP2_CLI_SETTING, 0x3010);
+    assert_eq!(MSP2_CLI_SETTING_INFO, 0x3011);
+    assert_eq!(MSP2_CLI_COMMAND, 0x3012);
+
     assert_eq!(MspRawImu::COMMAND_ID, MSP_RAW_IMU);
     assert_eq!(MspAttitude::COMMAND_ID, MSP_ATTITUDE);
     assert_eq!(MspAltitude::COMMAND_ID, MSP_ALTITUDE);
@@ -593,7 +657,51 @@ fn write_packet_and_request_across_all_versions_and_jumbo_boundaries() {
             Ok(expected_req.len())
         );
         assert_eq!(req_buf, expected_req);
+
+        for (dir_byte, direction) in [
+            (b'<', MspDirection::Request),
+            (b'>', MspDirection::Response),
+            (b'!', MspDirection::Error),
+        ] {
+            for len in [0, 1, 7, 255, 300] {
+                let raw_payload = vec![0x3c; len];
+                let expected_raw = wire(version, dir_byte, 108, &raw_payload);
+                let mut raw_buf = vec![0u8; expected_raw.len()];
+                assert_eq!(
+                    write_raw_frame_to_buffer(
+                        &mut raw_buf,
+                        version,
+                        direction,
+                        0xa5,
+                        108,
+                        &raw_payload,
+                    ),
+                    Ok(expected_raw.len())
+                );
+                assert_eq!(raw_buf, expected_raw);
+            }
+        }
     }
+}
+
+#[cfg(feature = "defmt")]
+#[test]
+fn public_types_implement_defmt_format() {
+    fn assert_defmt_format<T: defmt::Format>() {}
+
+    assert_defmt_format::<MspVersion>();
+    assert_defmt_format::<MspDirection>();
+    assert_defmt_format::<uf_msp::MspFrameError>();
+    assert_defmt_format::<MspFrame<'_>>();
+    assert_defmt_format::<MspParser<16>>();
+    assert_defmt_format::<MspAttitude>();
+    assert_defmt_format::<MspRawImu>();
+    assert_defmt_format::<MspAltitude>();
+    assert_defmt_format::<MspMessage>();
+    assert_defmt_format::<MspPacket>();
+    assert_defmt_format::<uf_msp::MspPackets<'_, '_, 16>>();
+    assert_defmt_format::<MspDecodeError>();
+    assert_defmt_format::<MspEncodeError>();
 }
 
 #[test]

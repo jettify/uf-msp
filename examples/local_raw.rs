@@ -13,10 +13,9 @@ use std::time::Duration;
 use std::time::Instant;
 use uf_msp::MspParser;
 use uf_msp::MspVersion;
+use uf_msp::commands::MSP_FC_VARIANT;
+use uf_msp::commands::MSP_STATUS;
 use uf_msp::write_request_to_buffer;
-
-const MSP_FC_VARIANT: u16 = 2;
-const MSP_STATUS: u16 = 101;
 
 fn main() -> ExitCode {
     let default_port = "/dev/tty.usbmodem00000000001B1";

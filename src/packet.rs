@@ -52,6 +52,7 @@ pub trait MspPayload: Sized {
 
 /// Attitude in the integer units transmitted by `MSP_ATTITUDE`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct MspAttitude {
     pub roll_decidegrees: i16,
     pub pitch_decidegrees: i16,
@@ -94,6 +95,7 @@ impl TryFrom<&[u8]> for MspAttitude {
 /// Values retain their wire representation. Sensor scaling depends on the
 /// flight controller firmware; no universal physical-unit conversion is applied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct MspRawImu {
     pub acc: [i16; 3],
     pub gyro: [i16; 3],
@@ -174,6 +176,7 @@ impl TryFrom<&[u8]> for MspRawImu {
 
 /// Altitude and vertical speed transmitted by `MSP_ALTITUDE`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct MspAltitude {
     pub altitude_cm: i32,
     pub vario_cm_s: i16,
@@ -210,6 +213,7 @@ impl TryFrom<&[u8]> for MspAltitude {
 
 /// Supported polling requests and telemetry responses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
 pub enum MspMessage {
     AttitudeRequest,
@@ -247,6 +251,7 @@ impl MspMessage {
 ///
 /// Wire bytes, checksums, and ignored trailing payload bytes are not retained.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct MspPacket {
     pub version: MspVersion,
     pub flags: u8,
@@ -306,6 +311,7 @@ impl MspPacket {
 
 /// Why a validated frame could not be decoded as a supported packet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
 pub enum MspDecodeError {
     UnsupportedCommand {
@@ -347,6 +353,7 @@ impl core::error::Error for MspDecodeError {}
 
 /// Why a payload or frame could not be serialized into a caller buffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
 pub enum MspEncodeError {
     /// The destination buffer cannot hold the serialized payload or frame.
@@ -726,6 +733,39 @@ pub fn write_packet_to_buffer<P: MspPayload>(
     )
 }
 
+/// Serializes a raw byte slice `payload` into `buffer` as a complete MSP wire frame,
+/// returning the total frame length in bytes.
+///
+/// Useful for encoding empty acknowledgments (`>`), error replies (`!`), or custom
+/// commands without defining an [`MspPayload`] type.
+///
+/// # Errors
+///
+/// Returns [`MspEncodeError::BufferTooSmall`] if `buffer` cannot hold the complete frame,
+/// [`MspEncodeError::InvalidV1Command`] if `version` is [`MspVersion::V1`] and `command_id >= 255`,
+/// or [`MspEncodeError::PayloadTooLarge`] if `payload.len()` exceeds the wire limit.
+pub fn write_raw_frame_to_buffer(
+    buffer: &mut [u8],
+    version: MspVersion,
+    direction: MspDirection,
+    flags: u8,
+    command_id: u16,
+    payload: &[u8],
+) -> Result<usize, MspEncodeError> {
+    encode_frame_with(
+        buffer,
+        version,
+        direction,
+        flags,
+        command_id,
+        payload.len(),
+        |dst| {
+            dst.copy_from_slice(payload);
+            Ok(payload.len())
+        },
+    )
+}
+
 /// Serializes an empty MSP polling request (`<`) into `buffer`, returning the
 /// total frame length in bytes.
 ///
@@ -739,14 +779,13 @@ pub fn write_request_to_buffer(
     flags: u8,
     command_id: u16,
 ) -> Result<usize, MspEncodeError> {
-    encode_frame_with(
+    write_raw_frame_to_buffer(
         buffer,
         version,
         MspDirection::Request,
         flags,
         command_id,
-        0,
-        |_dst| Ok(0),
+        &[],
     )
 }
 
@@ -846,6 +885,18 @@ impl<const N: usize> core::fmt::Debug for MspPackets<'_, '_, N> {
             .field("parser", &self.parser)
             .field("remaining_len", &self.input.len())
             .finish()
+    }
+}
+
+#[cfg(feature = "defmt")]
+impl<const N: usize> defmt::Format for MspPackets<'_, '_, N> {
+    fn format(&self, f: defmt::Formatter) {
+        defmt::write!(
+            f,
+            "MspPackets {{ parser: {}, remaining_len: {} }}",
+            self.parser,
+            self.input.len()
+        );
     }
 }
 

@@ -17,6 +17,7 @@ use crate::constants::V2_OVER_V1_HEADER_LEN;
 
 /// MSP framing version. Jumbo frames retain their underlying version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
 pub enum MspVersion {
     /// MSP v1, ordinary or jumbo.
@@ -28,6 +29,7 @@ pub enum MspVersion {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum MspDirection {
     Request,  // '<'
     Response, // '>'
@@ -86,6 +88,7 @@ pub const fn crc8_dvbs2_slice(initial: u8, mut data: &[u8]) -> u8 {
 
 /// Why a standalone byte slice could not be validated as an MSP frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
 pub enum MspFrameError {
     /// More bytes are needed; `required` is the next validation threshold.
@@ -145,6 +148,7 @@ impl core::error::Error for MspFrameError {}
 /// private so this type always represents a validated frame. Header fields are
 /// decoded during validation; payload and wire bytes remain borrowed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct MspFrame<'a> {
     bytes: &'a [u8],
     version: MspVersion,
@@ -672,6 +676,20 @@ impl<const N: usize> core::fmt::Debug for MspParser<N> {
             .field("end", &self.end)
             .field("buffered_len", &self.end.saturating_sub(self.start))
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(feature = "defmt")]
+impl<const N: usize> defmt::Format for MspParser<N> {
+    fn format(&self, f: defmt::Formatter) {
+        defmt::write!(
+            f,
+            "MspParser {{ capacity: {}, start: {}, end: {}, buffered_len: {}, .. }}",
+            N,
+            self.start,
+            self.end,
+            self.end.saturating_sub(self.start)
+        );
     }
 }
 
