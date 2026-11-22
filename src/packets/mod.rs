@@ -44,110 +44,161 @@ use crate::commands::MSP_SET_RAW_RC;
 use crate::commands::MSP_STATUS;
 use crate::write_packet_to_buffer;
 use crate::write_raw_frame_to_buffer;
-use crate::write_request_to_buffer;
 
-/// Supported MSP requests, responses, and setter acknowledgments.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[non_exhaustive]
-pub enum MspMessage {
-    // Identity & Status (Out)
-    ApiVersionRequest,
-    ApiVersion(MspApiVersion),
-    FcVariantRequest,
-    FcVariant(MspFcVariant),
-    FcVersionRequest,
-    FcVersion(MspFcVersion),
-    StatusRequest,
-    Status(MspStatus),
-
-    // Variable-length String (Out & In Setter)
-    NameRequest,
-    Name(MspName),
-    SetName(MspSetName),
-    SetNameResponse,
-
-    // Parameterized Request -> Typed Response (In/Out)
-    RebootRequest(MspRebootRequest),
-    Reboot(MspRebootResponse),
-
-    // Telemetry & Sensors (Out)
-    RawImuRequest,
-    RawImu(MspRawImu),
-    AttitudeRequest,
-    Attitude(MspAttitude),
-    AltitudeRequest,
-    Altitude(MspAltitude),
-
-    // RC Channels (Out & In Setter)
-    RcRequest,
-    Rc(MspRc),
-    SetRawRc(MspSetRawRc),
-    SetRawRcResponse,
-
-    // Action Triggers (Empty Request -> Empty ACK Response)
-    AccCalibrationRequest,
-    AccCalibrationResponse,
-    EepromWriteRequest,
-    EepromWriteResponse,
+/// Decodes a matched MSP command by dispatching on frame direction.
+fn decode_command(
+    command_id: u16,
+    direction: MspDirection,
+    decode_request: impl FnOnce() -> Result<MspMessage, MspDecodeError>,
+    decode_response: impl FnOnce() -> Result<MspMessage, MspDecodeError>,
+) -> Result<MspMessage, MspDecodeError> {
+    match direction {
+        MspDirection::Error => Err(MspDecodeError::RemoteError { command_id }),
+        MspDirection::Request => decode_request(),
+        MspDirection::Response => decode_response(),
+    }
 }
 
-impl MspMessage {
-    /// Returns the MSP command ID implied by this message.
-    #[must_use]
-    pub const fn command_id(&self) -> u16 {
-        match self {
-            Self::ApiVersionRequest | Self::ApiVersion(_) => MSP_API_VERSION,
-            Self::FcVariantRequest | Self::FcVariant(_) => MSP_FC_VARIANT,
-            Self::FcVersionRequest | Self::FcVersion(_) => MSP_FC_VERSION,
-            Self::NameRequest | Self::Name(_) => MSP_NAME,
-            Self::SetName(_) | Self::SetNameResponse => MSP_SET_NAME,
-            Self::RebootRequest(_) | Self::Reboot(_) => MSP_REBOOT,
-            Self::StatusRequest | Self::Status(_) => MSP_STATUS,
-            Self::RawImuRequest | Self::RawImu(_) => MSP_RAW_IMU,
-            Self::RcRequest | Self::Rc(_) => MSP_RC,
-            Self::AttitudeRequest | Self::Attitude(_) => MSP_ATTITUDE,
-            Self::AltitudeRequest | Self::Altitude(_) => MSP_ALTITUDE,
-            Self::SetRawRc(_) | Self::SetRawRcResponse => MSP_SET_RAW_RC,
-            Self::AccCalibrationRequest | Self::AccCalibrationResponse => MSP_ACC_CALIBRATION,
-            Self::EepromWriteRequest | Self::EepromWriteResponse => MSP_EEPROM_WRITE,
-        }
-    }
+// Each row declares a request and response. A variant without a type has an empty payload.
+macro_rules! define_msp_messages {
+    (
+        $(
+            $command:ident => (
+                $request:ident $(($request_payload:ty))?,
+                $response:ident $(($response_payload:ty))?
+            )
+        ),+ $(,)?
+    ) => {
+        const _: () = {
+            $(
+                $(assert!(<$request_payload as MspPayload>::COMMAND_ID == $command);)?
+                $(assert!(<$response_payload as MspPayload>::COMMAND_ID == $command);)?
+            )+
+        };
 
-    /// Returns the request or response direction implied by this message.
-    #[must_use]
-    pub const fn direction(&self) -> MspDirection {
-        match self {
-            Self::ApiVersionRequest
-            | Self::FcVariantRequest
-            | Self::FcVersionRequest
-            | Self::StatusRequest
-            | Self::NameRequest
-            | Self::SetName(_)
-            | Self::RebootRequest(_)
-            | Self::RawImuRequest
-            | Self::AttitudeRequest
-            | Self::AltitudeRequest
-            | Self::RcRequest
-            | Self::SetRawRc(_)
-            | Self::AccCalibrationRequest
-            | Self::EepromWriteRequest => MspDirection::Request,
-            Self::ApiVersion(_)
-            | Self::FcVariant(_)
-            | Self::FcVersion(_)
-            | Self::Status(_)
-            | Self::Name(_)
-            | Self::SetNameResponse
-            | Self::Reboot(_)
-            | Self::RawImu(_)
-            | Self::Attitude(_)
-            | Self::Altitude(_)
-            | Self::Rc(_)
-            | Self::SetRawRcResponse
-            | Self::AccCalibrationResponse
-            | Self::EepromWriteResponse => MspDirection::Response,
+        /// Supported MSP requests, responses, and setter acknowledgments.
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+        #[non_exhaustive]
+        pub enum MspMessage {
+            $(
+                $request $(($request_payload))?,
+                $response $(($response_payload))?,
+            )+
         }
-    }
+
+        impl MspMessage {
+            /// Returns the MSP command ID implied by this message.
+            #[must_use]
+            pub const fn command_id(&self) -> u16 {
+                match self {
+                    $(
+                        define_msp_messages!(@pattern $request $(($request_payload))?, _)
+                        | define_msp_messages!(@pattern $response $(($response_payload))?, _) => $command,
+                    )+
+                }
+            }
+
+            /// Returns the request or response direction implied by this message.
+            #[must_use]
+            pub const fn direction(&self) -> MspDirection {
+                match self {
+                    $(
+                        define_msp_messages!(@pattern $request $(($request_payload))?, _) => {
+                            MspDirection::Request
+                        }
+                        define_msp_messages!(@pattern $response $(($response_payload))?, _) => {
+                            MspDirection::Response
+                        }
+                    )+
+                }
+            }
+
+            fn encode_frame(
+                &self,
+                buffer: &mut [u8],
+                version: MspVersion,
+                flags: u8,
+            ) -> Result<usize, MspEncodeError> {
+                let direction = self.direction();
+                match self {
+                    $(
+                        define_msp_messages!(@pattern $request $(($request_payload))?, payload) => {
+                            define_msp_messages!(
+                                @encode buffer, version, direction, flags, $command
+                                $(, payload: $request_payload)?
+                            )
+                        }
+                        define_msp_messages!(@pattern $response $(($response_payload))?, payload) => {
+                            define_msp_messages!(
+                                @encode buffer, version, direction, flags, $command
+                                $(, payload: $response_payload)?
+                            )
+                        }
+                    )+
+                }
+            }
+
+            #[deny(unreachable_patterns)]
+            fn decode_payload(
+                command_id: u16,
+                direction: MspDirection,
+                payload: &[u8],
+            ) -> Result<Self, MspDecodeError> {
+                match command_id {
+                    $(
+                        $command => decode_command(
+                            command_id,
+                            direction,
+                            || define_msp_messages!(@decode payload, $request $(($request_payload))?),
+                            || define_msp_messages!(@decode payload, $response $(($response_payload))?),
+                        ),
+                    )+
+                    _ => Err(MspDecodeError::UnsupportedCommand { command_id }),
+                }
+            }
+        }
+    };
+
+    (@pattern $variant:ident, $binding:pat) => {
+        Self::$variant
+    };
+    (@pattern $variant:ident ($ty:ty), $binding:pat) => {
+        Self::$variant($binding)
+    };
+
+    (@encode $buffer:ident, $version:ident, $direction:ident, $flags:ident, $command:ident) => {
+        write_raw_frame_to_buffer($buffer, $version, $direction, $flags, $command, &[])
+    };
+    (@encode $buffer:ident, $version:ident, $direction:ident, $flags:ident, $command:ident,
+        $payload:ident: $ty:ty
+    ) => {
+        write_packet_to_buffer($buffer, $version, $direction, $flags, $payload)
+    };
+
+    (@decode $payload:ident, $variant:ident) => {
+        Ok(Self::$variant)
+    };
+    (@decode $payload:ident, $variant:ident ($ty:ty)) => {
+        <$ty as MspPayload>::from_bytes($payload).map(Self::$variant)
+    };
+}
+
+define_msp_messages! {
+    MSP_API_VERSION     => (ApiVersionRequest, ApiVersion(MspApiVersion)),
+    MSP_FC_VARIANT      => (FcVariantRequest, FcVariant(MspFcVariant)),
+    MSP_FC_VERSION      => (FcVersionRequest, FcVersion(MspFcVersion)),
+    MSP_STATUS          => (StatusRequest, Status(MspStatus)),
+    MSP_NAME            => (NameRequest, Name(MspName)),
+    MSP_RAW_IMU         => (RawImuRequest, RawImu(MspRawImu)),
+    MSP_ATTITUDE        => (AttitudeRequest, Attitude(MspAttitude)),
+    MSP_ALTITUDE        => (AltitudeRequest, Altitude(MspAltitude)),
+    MSP_RC              => (RcRequest, Rc(MspRc)),
+    MSP_SET_NAME        => (SetName(MspSetName), SetNameResponse),
+    MSP_SET_RAW_RC      => (SetRawRc(MspSetRawRc), SetRawRcResponse),
+    MSP_REBOOT          => (RebootRequest(MspRebootRequest), Reboot(MspRebootResponse)),
+    MSP_ACC_CALIBRATION => (AccCalibrationRequest, AccCalibrationResponse),
+    MSP_EEPROM_WRITE    => (EepromWriteRequest, EepromWriteResponse),
 }
 
 /// An owned decoded packet, independent of the parser and its input bytes.
@@ -193,130 +244,7 @@ impl MspPacket {
     /// [`MspEncodeError::InvalidV1Command`] if `version` is [`MspVersion::V1`] and the command ID
     /// is at least 255, or [`MspEncodeError::PayloadTooLarge`] if the payload exceeds wire limits.
     pub fn to_bytes(&self, buffer: &mut [u8]) -> Result<usize, MspEncodeError> {
-        let dir = self.direction();
-        match &self.message {
-            MspMessage::ApiVersionRequest
-            | MspMessage::FcVariantRequest
-            | MspMessage::FcVersionRequest
-            | MspMessage::StatusRequest
-            | MspMessage::NameRequest
-            | MspMessage::RawImuRequest
-            | MspMessage::AttitudeRequest
-            | MspMessage::AltitudeRequest
-            | MspMessage::RcRequest
-            | MspMessage::AccCalibrationRequest
-            | MspMessage::EepromWriteRequest => {
-                write_request_to_buffer(buffer, self.version, self.flags, self.command_id())
-            }
-            MspMessage::SetNameResponse
-            | MspMessage::SetRawRcResponse
-            | MspMessage::AccCalibrationResponse
-            | MspMessage::EepromWriteResponse => write_raw_frame_to_buffer(
-                buffer,
-                self.version,
-                MspDirection::Response,
-                self.flags,
-                self.command_id(),
-                &[],
-            ),
-            MspMessage::ApiVersion(p) => {
-                write_packet_to_buffer(buffer, self.version, dir, self.flags, p)
-            }
-            MspMessage::FcVariant(p) => {
-                write_packet_to_buffer(buffer, self.version, dir, self.flags, p)
-            }
-            MspMessage::FcVersion(p) => {
-                write_packet_to_buffer(buffer, self.version, dir, self.flags, p)
-            }
-            MspMessage::Status(p) => {
-                write_packet_to_buffer(buffer, self.version, dir, self.flags, p)
-            }
-            MspMessage::Name(p) => write_packet_to_buffer(buffer, self.version, dir, self.flags, p),
-            MspMessage::SetName(p) => {
-                write_packet_to_buffer(buffer, self.version, dir, self.flags, p)
-            }
-            MspMessage::RebootRequest(p) => {
-                write_packet_to_buffer(buffer, self.version, dir, self.flags, p)
-            }
-            MspMessage::Reboot(p) => {
-                write_packet_to_buffer(buffer, self.version, dir, self.flags, p)
-            }
-            MspMessage::Attitude(p) => {
-                write_packet_to_buffer(buffer, self.version, dir, self.flags, p)
-            }
-            MspMessage::RawImu(p) => {
-                write_packet_to_buffer(buffer, self.version, dir, self.flags, p)
-            }
-            MspMessage::Altitude(p) => {
-                write_packet_to_buffer(buffer, self.version, dir, self.flags, p)
-            }
-            MspMessage::Rc(p) => write_packet_to_buffer(buffer, self.version, dir, self.flags, p),
-            MspMessage::SetRawRc(p) => {
-                write_packet_to_buffer(buffer, self.version, dir, self.flags, p)
-            }
-        }
-    }
-}
-
-/// Decodes an "Out" command: empty `<` polling request, typed `>` response.
-fn decode_out_command<P: MspPayload>(
-    direction: MspDirection,
-    payload: &[u8],
-    request: MspMessage,
-    wrap_response: fn(P) -> MspMessage,
-) -> Result<MspMessage, MspDecodeError> {
-    match direction {
-        MspDirection::Error => Err(MspDecodeError::RemoteError {
-            command_id: P::COMMAND_ID,
-        }),
-        MspDirection::Request => Ok(request),
-        MspDirection::Response => P::from_bytes(payload).map(wrap_response),
-    }
-}
-
-/// Decodes an "In" setter command: typed `<` request, empty `>` ACK response.
-fn decode_in_command<P: MspPayload>(
-    direction: MspDirection,
-    payload: &[u8],
-    wrap_request: fn(P) -> MspMessage,
-    response_ack: MspMessage,
-) -> Result<MspMessage, MspDecodeError> {
-    match direction {
-        MspDirection::Error => Err(MspDecodeError::RemoteError {
-            command_id: P::COMMAND_ID,
-        }),
-        MspDirection::Request => P::from_bytes(payload).map(wrap_request),
-        MspDirection::Response => Ok(response_ack),
-    }
-}
-
-/// Decodes a bidirectional "In/Out" command: typed `<` request, typed `>` response.
-fn decode_inout_command<Req: MspPayload, Resp: MspPayload>(
-    direction: MspDirection,
-    payload: &[u8],
-    wrap_request: fn(Req) -> MspMessage,
-    wrap_response: fn(Resp) -> MspMessage,
-) -> Result<MspMessage, MspDecodeError> {
-    match direction {
-        MspDirection::Error => Err(MspDecodeError::RemoteError {
-            command_id: Req::COMMAND_ID,
-        }),
-        MspDirection::Request => Req::from_bytes(payload).map(wrap_request),
-        MspDirection::Response => Resp::from_bytes(payload).map(wrap_response),
-    }
-}
-
-/// Decodes a parameterless action trigger: empty `<` request, empty `>` ACK response.
-fn decode_action_command(
-    command_id: u16,
-    direction: MspDirection,
-    request: MspMessage,
-    response_ack: MspMessage,
-) -> Result<MspMessage, MspDecodeError> {
-    match direction {
-        MspDirection::Error => Err(MspDecodeError::RemoteError { command_id }),
-        MspDirection::Request => Ok(request),
-        MspDirection::Response => Ok(response_ack),
+        self.message.encode_frame(buffer, self.version, self.flags)
     }
 }
 
@@ -327,93 +255,8 @@ impl TryFrom<MspFrame<'_>> for MspPacket {
     /// responses. The frame is already validated, including checksums covering all
     /// declared payload bytes.
     fn try_from(frame: MspFrame<'_>) -> Result<Self, Self::Error> {
-        let command_id = frame.command_id();
-        let direction = frame.direction();
-        let payload = frame.payload();
-        let message = match command_id {
-            MSP_API_VERSION => decode_out_command(
-                direction,
-                payload,
-                MspMessage::ApiVersionRequest,
-                MspMessage::ApiVersion,
-            )?,
-            MSP_FC_VARIANT => decode_out_command(
-                direction,
-                payload,
-                MspMessage::FcVariantRequest,
-                MspMessage::FcVariant,
-            )?,
-            MSP_FC_VERSION => decode_out_command(
-                direction,
-                payload,
-                MspMessage::FcVersionRequest,
-                MspMessage::FcVersion,
-            )?,
-            MSP_NAME => decode_out_command(
-                direction,
-                payload,
-                MspMessage::NameRequest,
-                MspMessage::Name,
-            )?,
-            MSP_SET_NAME => decode_in_command(
-                direction,
-                payload,
-                MspMessage::SetName,
-                MspMessage::SetNameResponse,
-            )?,
-            MSP_REBOOT => decode_inout_command(
-                direction,
-                payload,
-                MspMessage::RebootRequest,
-                MspMessage::Reboot,
-            )?,
-            MSP_STATUS => decode_out_command(
-                direction,
-                payload,
-                MspMessage::StatusRequest,
-                MspMessage::Status,
-            )?,
-            MSP_RAW_IMU => decode_out_command(
-                direction,
-                payload,
-                MspMessage::RawImuRequest,
-                MspMessage::RawImu,
-            )?,
-            MSP_RC => {
-                decode_out_command(direction, payload, MspMessage::RcRequest, MspMessage::Rc)?
-            }
-            MSP_ATTITUDE => decode_out_command(
-                direction,
-                payload,
-                MspMessage::AttitudeRequest,
-                MspMessage::Attitude,
-            )?,
-            MSP_ALTITUDE => decode_out_command(
-                direction,
-                payload,
-                MspMessage::AltitudeRequest,
-                MspMessage::Altitude,
-            )?,
-            MSP_SET_RAW_RC => decode_in_command(
-                direction,
-                payload,
-                MspMessage::SetRawRc,
-                MspMessage::SetRawRcResponse,
-            )?,
-            MSP_ACC_CALIBRATION => decode_action_command(
-                MSP_ACC_CALIBRATION,
-                direction,
-                MspMessage::AccCalibrationRequest,
-                MspMessage::AccCalibrationResponse,
-            )?,
-            MSP_EEPROM_WRITE => decode_action_command(
-                MSP_EEPROM_WRITE,
-                direction,
-                MspMessage::EepromWriteRequest,
-                MspMessage::EepromWriteResponse,
-            )?,
-            _ => return Err(MspDecodeError::UnsupportedCommand { command_id }),
-        };
+        let message =
+            MspMessage::decode_payload(frame.command_id(), frame.direction(), frame.payload())?;
         Ok(Self {
             version: frame.version(),
             flags: frame.flags(),
