@@ -7,6 +7,7 @@ pub mod commands;
 mod constants;
 mod packets;
 mod parser;
+mod types;
 
 pub use codec::MspDecodeError;
 pub use codec::MspEncodeError;
@@ -26,3 +27,6 @@ pub use parser::MspFrameError;
 pub use parser::MspParser;
 pub use parser::MspVersion;
 pub use parser::crc8_dvbs2_slice;
+pub use types::CapacityError;
+pub use types::MspString;
+pub use types::MspVec;

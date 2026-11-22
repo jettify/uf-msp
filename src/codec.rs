@@ -56,11 +56,16 @@ pub enum MspDecodeError {
     RemoteError {
         command_id: u16,
     },
-    /// A response has fewer than the required prefix bytes.
+    /// A payload has fewer than the required prefix bytes.
     PayloadTooShort {
         command_id: u16,
         required: usize,
         actual: usize,
+    },
+    /// A payload meets the minimum size, but contains malformed inner fields
+    /// (such as invalid UTF-8, an unknown discriminant, or a trailing slice exceeding capacity).
+    InvalidPayload {
+        command_id: u16,
     },
 }
 
@@ -81,6 +86,9 @@ impl core::fmt::Display for MspDecodeError {
                 f,
                 "MSP command {command_id} payload too short: need {required} bytes, got {actual}"
             ),
+            Self::InvalidPayload { command_id } => {
+                write!(f, "invalid MSP payload for command {command_id}")
+            }
         }
     }
 }

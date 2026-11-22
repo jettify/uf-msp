@@ -367,6 +367,10 @@ fn errors_implement_display_and_error_trait() {
             },
             "MSP command 108 payload too short: need 6 bytes, got 5",
         ),
+        (
+            MspDecodeError::InvalidPayload { command_id: 10 },
+            "invalid MSP payload for command 10",
+        ),
     ];
     for (error, expected) in errors {
         assert_eq!(error.to_string(), expected);
@@ -702,6 +706,74 @@ fn public_types_implement_defmt_format() {
     assert_defmt_format::<uf_msp::MspPackets<'_, '_, 16>>();
     assert_defmt_format::<MspDecodeError>();
     assert_defmt_format::<MspEncodeError>();
+    assert_defmt_format::<uf_msp::CapacityError>();
+    assert_defmt_format::<uf_msp::MspVec<u16, 18>>();
+    assert_defmt_format::<uf_msp::MspString<16>>();
+}
+
+#[test]
+fn fixed_containers_and_packet_stack_footprint() {
+    use std::error::Error;
+    use uf_msp::CapacityError;
+    use uf_msp::MspString;
+    use uf_msp::MspVec;
+
+    let mut vec = MspVec::<u16, 4>::new();
+    assert!(vec.is_empty());
+    assert_eq!(vec.capacity(), 4);
+    assert_eq!(vec.len(), 0);
+    vec.push(1000).unwrap();
+    vec.push(1500).unwrap();
+    assert_eq!(vec.as_slice(), &[1000, 1500]);
+    assert_eq!(&*vec, &[1000, 1500]);
+    vec.as_mut_slice()[1] = 2000;
+    assert_eq!(vec, MspVec::from_slice(&[1000, 2000]).unwrap());
+
+    assert_eq!(
+        MspVec::<u16, 4>::try_from([1_u16, 2, 3, 4, 5].as_slice()),
+        Err(CapacityError {
+            capacity: 4,
+            requested: 5,
+        })
+    );
+    vec.clear();
+    assert!(vec.is_empty());
+
+    let name = MspString::<16>::from_str("uflight-quad").unwrap();
+    assert_eq!(name.len(), 12);
+    assert!(!name.is_empty());
+    assert_eq!(name.capacity(), 16);
+    assert_eq!(name.as_str(), "uflight-quad");
+    assert_eq!(&*name, "uflight-quad");
+    assert_eq!(name.to_string(), "uflight-quad");
+    assert_eq!(MspString::<16>::from_utf8(b"uflight-quad"), Some(name));
+    assert_eq!(MspString::<16>::from_utf8(&[0xff, 0xfe]), None);
+
+    let err = MspString::<4>::try_from("too-long").unwrap_err();
+    assert_eq!(
+        err,
+        CapacityError {
+            capacity: 4,
+            requested: 8,
+        }
+    );
+    assert_eq!(
+        err.to_string(),
+        "MSP fixed container capacity exceeded: capacity 4, requested 8"
+    );
+    assert!(err.source().is_none());
+
+    // Guard embedded stack footprint: owned packets must stay compact (<= 64 bytes).
+    assert!(
+        core::mem::size_of::<MspMessage>() <= 64,
+        "MspMessage grew too large for embedded stacks: {} bytes",
+        core::mem::size_of::<MspMessage>()
+    );
+    assert!(
+        core::mem::size_of::<MspPacket>() <= 64,
+        "MspPacket grew too large for embedded stacks: {} bytes",
+        core::mem::size_of::<MspPacket>()
+    );
 }
 
 #[test]
