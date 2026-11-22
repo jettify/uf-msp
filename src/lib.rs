@@ -15,10 +15,14 @@ pub mod commands {
 pub use packet::MspAltitude;
 pub use packet::MspAttitude;
 pub use packet::MspDecodeError;
+pub use packet::MspEncodeError;
 pub use packet::MspMessage;
 pub use packet::MspPacket;
 pub use packet::MspPackets;
+pub use packet::MspPayload;
 pub use packet::MspRawImu;
+pub use packet::write_packet_to_buffer;
+pub use packet::write_request_to_buffer;
 pub use parser::MspDirection;
 pub use parser::MspFrame;
 pub use parser::MspFrameError;

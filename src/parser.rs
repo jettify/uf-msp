@@ -44,6 +44,15 @@ impl MspDirection {
             _ => None,
         }
     }
+
+    #[must_use]
+    pub(crate) const fn to_byte(self) -> u8 {
+        match self {
+            Self::Request => b'<',
+            Self::Response => b'>',
+            Self::Error => b'!',
+        }
+    }
 }
 
 /// Updates a running CRC-8 (DVB-S2) with a single byte.

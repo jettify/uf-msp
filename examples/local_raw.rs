@@ -12,8 +12,11 @@ use std::process::ExitCode;
 use std::time::Duration;
 use std::time::Instant;
 use uf_msp::MspParser;
+use uf_msp::MspVersion;
+use uf_msp::write_request_to_buffer;
 
 const MSP_FC_VARIANT: u16 = 2;
+const MSP_STATUS: u16 = 101;
 
 fn main() -> ExitCode {
     let default_port = "/dev/tty.usbmodem00000000001B1";
@@ -31,12 +34,12 @@ fn main() -> ExitCode {
     };
 
     let mut buf = [0u8; 1024];
+    let mut tx_buf = [0u8; 16];
     let mut parser = MspParser::<1024>::new();
 
-    // Fixed MSP v2 requests (including CRC) until the library provides serialization.
-    // MSP_FC_VARIANT (2), flags = 0, empty payload.
-    let init_req = *b"$X<\x00\x02\x00\x00\x00\x8a";
-    if let Err(e) = port.write_all(&init_req) {
+    if let Ok(len) = write_request_to_buffer(&mut tx_buf, MspVersion::V2, 0, MSP_FC_VARIANT)
+        && let Err(e) = port.write_all(&tx_buf[..len])
+    {
         eprintln!("Failed to send initial request: {e}");
     }
 
@@ -46,9 +49,9 @@ fn main() -> ExitCode {
     println!("Reading from serial port '{port_name}'...");
     loop {
         if last_poll.elapsed() >= poll_interval {
-            // MSP_STATUS (101), flags = 0, empty payload.
-            let req = *b"$X<\x00\x65\x00\x00\x00\xca";
-            if let Err(e) = port.write_all(&req) {
+            if let Ok(len) = write_request_to_buffer(&mut tx_buf, MspVersion::V2, 0, MSP_STATUS)
+                && let Err(e) = port.write_all(&tx_buf[..len])
+            {
                 eprintln!("Error sending request: {e}");
             }
             last_poll = Instant::now();

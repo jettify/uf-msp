@@ -2,16 +2,20 @@ use uf_msp::MspAltitude;
 use uf_msp::MspAttitude;
 use uf_msp::MspDecodeError;
 use uf_msp::MspDirection;
+use uf_msp::MspEncodeError;
 use uf_msp::MspFrame;
 use uf_msp::MspMessage;
 use uf_msp::MspPacket;
 use uf_msp::MspParser;
+use uf_msp::MspPayload;
 use uf_msp::MspRawImu;
 use uf_msp::MspVersion;
 use uf_msp::commands::MSP_ALTITUDE;
 use uf_msp::commands::MSP_ATTITUDE;
 use uf_msp::commands::MSP_RAW_IMU;
 use uf_msp::crc8_dvbs2_slice;
+use uf_msp::write_packet_to_buffer;
+use uf_msp::write_request_to_buffer;
 
 const VERSIONS: [MspVersion; 3] = [MspVersion::V1, MspVersion::V2, MspVersion::V2OverV1];
 
@@ -126,6 +130,20 @@ fn responses_and_requests_across_formats_and_every_split() {
                     MspPacket::try_from(MspFrame::try_from(bytes.as_slice()).unwrap()),
                     Ok(expected)
                 );
+                let mut encoded = vec![0xee_u8; bytes.len() + 4];
+                assert_eq!(expected.to_bytes(&mut encoded), Ok(bytes.len()));
+                assert_eq!(&encoded[..bytes.len()], bytes.as_slice());
+                assert_eq!(&encoded[bytes.len()..], &[0xee; 4]);
+                for short_len in 0..bytes.len() {
+                    let mut short_buf = vec![0u8; short_len];
+                    assert_eq!(
+                        expected.to_bytes(&mut short_buf),
+                        Err(MspEncodeError::BufferTooSmall {
+                            required: bytes.len(),
+                            actual: short_len,
+                        })
+                    );
+                }
                 for split in 0..=bytes.len() {
                     let mut parser = MspParser::<64>::new();
                     let mut packets = Vec::new();
@@ -355,6 +373,31 @@ fn errors_implement_display_and_error_trait() {
         assert_eq!(error.to_string(), expected);
         assert!(error.source().is_none());
     }
+
+    let encode_errors = [
+        (
+            MspEncodeError::BufferTooSmall {
+                required: 18,
+                actual: 12,
+            },
+            "MSP buffer too small: need 18 bytes, got 12",
+        ),
+        (
+            MspEncodeError::InvalidV1Command { command_id: 255 },
+            "MSP command 255 cannot be encoded as raw MSP v1 (must be < 255)",
+        ),
+        (
+            MspEncodeError::PayloadTooLarge {
+                max: 65_529,
+                actual: 65_530,
+            },
+            "MSP payload too large: maximum 65529 bytes, got 65530",
+        ),
+    ];
+    for (error, expected) in encode_errors {
+        assert_eq!(error.to_string(), expected);
+        assert!(error.source().is_none());
+    }
 }
 
 #[test]
@@ -397,54 +440,71 @@ fn public_command_constants_match_wire_ids() {
     assert_eq!(MspRawImu::COMMAND_ID, MSP_RAW_IMU);
     assert_eq!(MspAttitude::COMMAND_ID, MSP_ATTITUDE);
     assert_eq!(MspAltitude::COMMAND_ID, MSP_ALTITUDE);
-    assert_eq!(MspRawImu::PAYLOAD_LEN, 18);
-    assert_eq!(MspAttitude::PAYLOAD_LEN, 6);
-    assert_eq!(MspAltitude::PAYLOAD_LEN, 6);
+    assert_eq!(MspRawImu::MIN_PAYLOAD_SIZE, 18);
+    assert_eq!(MspAttitude::MIN_PAYLOAD_SIZE, 6);
+    assert_eq!(MspAltitude::MIN_PAYLOAD_SIZE, 6);
     assert_eq!(MspMessage::RawImuRequest.command_id(), MSP_RAW_IMU);
     assert_eq!(MspMessage::AttitudeRequest.command_id(), MSP_ATTITUDE);
     assert_eq!(MspMessage::AltitudeRequest.command_id(), MSP_ALTITUDE);
 }
 
+fn check_payload_codec<P>(expected: P, wire_bytes: &[u8])
+where
+    P: MspPayload + Copy + PartialEq + core::fmt::Debug,
+{
+    assert_eq!(expected.payload_size(), P::MIN_PAYLOAD_SIZE);
+    assert_eq!(expected.payload_size(), wire_bytes.len());
+
+    let mut exact = vec![0u8; P::MIN_PAYLOAD_SIZE];
+    assert_eq!(expected.to_bytes(&mut exact), Ok(P::MIN_PAYLOAD_SIZE));
+    assert_eq!(exact, wire_bytes);
+    assert_eq!(P::from_bytes(&exact), Ok(expected));
+
+    let mut oversized = vec![0xee_u8; P::MIN_PAYLOAD_SIZE + 4];
+    assert_eq!(expected.to_bytes(&mut oversized), Ok(P::MIN_PAYLOAD_SIZE));
+    assert_eq!(&oversized[..P::MIN_PAYLOAD_SIZE], wire_bytes);
+    assert_eq!(
+        &oversized[P::MIN_PAYLOAD_SIZE..],
+        &[0xee; 4],
+        "to_bytes must not clobber trailing bytes"
+    );
+    assert_eq!(P::from_bytes(&oversized), Ok(expected));
+
+    for short_len in 0..P::MIN_PAYLOAD_SIZE {
+        let mut short_buf = vec![0u8; short_len];
+        assert_eq!(
+            expected.to_bytes(&mut short_buf),
+            Err(MspEncodeError::BufferTooSmall {
+                required: P::MIN_PAYLOAD_SIZE,
+                actual: short_len,
+            })
+        );
+        assert_eq!(
+            P::from_bytes(&wire_bytes[..short_len]),
+            Err(MspDecodeError::PayloadTooShort {
+                command_id: P::COMMAND_ID,
+                required: P::MIN_PAYLOAD_SIZE,
+                actual: short_len,
+            })
+        );
+    }
+}
+
 #[test]
-fn per_message_payload_decoders_work_directly() {
-    for (message, mut payload) in samples() {
-        payload.extend_from_slice(&[0xff; 4]);
+fn per_message_payload_codecs_roundtrip_and_check_lengths() {
+    for (message, payload) in samples() {
         match message {
             MspMessage::Attitude(expected) => {
-                assert_eq!(MspAttitude::decode(&payload), Ok(expected));
+                check_payload_codec(expected, &payload);
                 assert_eq!(MspAttitude::try_from(payload.as_slice()), Ok(expected));
-                assert_eq!(
-                    MspAttitude::decode(&payload[..5]),
-                    Err(MspDecodeError::PayloadTooShort {
-                        command_id: MSP_ATTITUDE,
-                        required: 6,
-                        actual: 5,
-                    })
-                );
             }
             MspMessage::RawImu(expected) => {
-                assert_eq!(MspRawImu::decode(&payload), Ok(expected));
+                check_payload_codec(expected, &payload);
                 assert_eq!(MspRawImu::try_from(payload.as_slice()), Ok(expected));
-                assert_eq!(
-                    MspRawImu::decode(&payload[..17]),
-                    Err(MspDecodeError::PayloadTooShort {
-                        command_id: MSP_RAW_IMU,
-                        required: 18,
-                        actual: 17,
-                    })
-                );
             }
             MspMessage::Altitude(expected) => {
-                assert_eq!(MspAltitude::decode(&payload), Ok(expected));
+                check_payload_codec(expected, &payload);
                 assert_eq!(MspAltitude::try_from(payload.as_slice()), Ok(expected));
-                assert_eq!(
-                    MspAltitude::decode(&payload[..5]),
-                    Err(MspDecodeError::PayloadTooShort {
-                        command_id: MSP_ALTITUDE,
-                        required: 6,
-                        actual: 5,
-                    })
-                );
             }
             _ => unreachable!(),
         }
@@ -469,5 +529,138 @@ fn packet_iterator_implements_debug() {
     assert_eq!(
         format!("{packets:?}"),
         "MspPackets { parser: MspParser { capacity: 32, start: 0, end: 0, buffered_len: 0, .. }, remaining_len: 0 }"
+    );
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct VariablePayload<const CMD: u16>(Vec<u8>);
+
+impl<const CMD: u16> MspPayload for VariablePayload<CMD> {
+    const COMMAND_ID: u16 = CMD;
+    const MIN_PAYLOAD_SIZE: usize = 0;
+
+    fn payload_size(&self) -> usize {
+        self.0.len()
+    }
+
+    fn from_bytes(data: &[u8]) -> Result<Self, MspDecodeError> {
+        Ok(Self(data.to_vec()))
+    }
+
+    fn to_bytes(&self, buffer: &mut [u8]) -> Result<usize, MspEncodeError> {
+        let required = self.0.len();
+        let actual = buffer.len();
+        let dst = buffer
+            .get_mut(..required)
+            .ok_or(MspEncodeError::BufferTooSmall { required, actual })?;
+        dst.copy_from_slice(&self.0);
+        Ok(required)
+    }
+}
+
+#[test]
+fn write_packet_and_request_across_all_versions_and_jumbo_boundaries() {
+    for version in VERSIONS {
+        for len in [0, 1, 248, 249, 254, 255, 256, 512] {
+            let payload = VariablePayload::<108>(vec![0x5a; len]);
+            for (dir_byte, direction) in [
+                (b'<', MspDirection::Request),
+                (b'>', MspDirection::Response),
+                (b'!', MspDirection::Error),
+            ] {
+                let expected = wire(version, dir_byte, 108, &payload.0);
+                let mut buf = vec![0u8; expected.len()];
+                assert_eq!(
+                    write_packet_to_buffer(&mut buf, version, direction, 0xa5, &payload),
+                    Ok(expected.len())
+                );
+                assert_eq!(buf, expected);
+                let frame = MspFrame::try_from(buf.as_slice()).unwrap();
+                assert_eq!(frame.version(), version);
+                assert_eq!(frame.direction(), direction);
+                assert_eq!(frame.command_id(), 108);
+                assert_eq!(
+                    VariablePayload::<108>::from_bytes(frame.payload()),
+                    Ok(VariablePayload(payload.0.clone()))
+                );
+            }
+        }
+
+        let expected_req = wire(version, b'<', 108, &[]);
+        let mut req_buf = vec![0u8; expected_req.len()];
+        assert_eq!(
+            write_request_to_buffer(&mut req_buf, version, 0xa5, 108),
+            Ok(expected_req.len())
+        );
+        assert_eq!(req_buf, expected_req);
+    }
+}
+
+#[test]
+fn frame_encoding_validates_v1_commands_and_payload_limits() {
+    struct OversizedPayload(usize);
+    impl MspPayload for OversizedPayload {
+        const COMMAND_ID: u16 = 108;
+        const MIN_PAYLOAD_SIZE: usize = 0;
+
+        fn payload_size(&self) -> usize {
+            self.0
+        }
+
+        fn from_bytes(_data: &[u8]) -> Result<Self, MspDecodeError> {
+            Ok(Self(0))
+        }
+
+        fn to_bytes(&self, _buffer: &mut [u8]) -> Result<usize, MspEncodeError> {
+            Ok(self.0)
+        }
+    }
+
+    let mut buf = [0u8; 32];
+    for command_id in [255_u16, 256, 0x3012] {
+        assert_eq!(
+            write_request_to_buffer(&mut buf, MspVersion::V1, 0, command_id),
+            Err(MspEncodeError::InvalidV1Command { command_id })
+        );
+        for version in [MspVersion::V2, MspVersion::V2OverV1] {
+            let expected = wire(version, b'<', command_id, &[]);
+            let len = write_request_to_buffer(&mut buf, version, 0xa5, command_id).unwrap();
+            assert_eq!(&buf[..len], expected.as_slice());
+        }
+    }
+
+    let v2_cmd = VariablePayload::<0x3012>(vec![1, 2, 3]);
+    assert_eq!(
+        write_packet_to_buffer(&mut buf, MspVersion::V1, MspDirection::Response, 0, &v2_cmd),
+        Err(MspEncodeError::InvalidV1Command { command_id: 0x3012 })
+    );
+
+    for version in [MspVersion::V1, MspVersion::V2] {
+        assert_eq!(
+            write_packet_to_buffer(
+                &mut buf,
+                version,
+                MspDirection::Response,
+                0,
+                &OversizedPayload(65_536)
+            ),
+            Err(MspEncodeError::PayloadTooLarge {
+                max: 65_535,
+                actual: 65_536,
+            })
+        );
+    }
+    assert_eq!(
+        write_packet_to_buffer(
+            &mut buf,
+            MspVersion::V2OverV1,
+            MspDirection::Response,
+            0,
+            &OversizedPayload(65_530)
+        ),
+        Err(MspEncodeError::PayloadTooLarge {
+            max: 65_529,
+            actual: 65_530,
+        })
     );
 }
