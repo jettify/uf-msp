@@ -1,10 +1,5 @@
 use crate::MspDirection;
-use crate::MspFrame;
-use crate::MspParser;
 use crate::MspVersion;
-use crate::commands::MSP_ALTITUDE;
-use crate::commands::MSP_ATTITUDE;
-use crate::commands::MSP_RAW_IMU;
 use crate::constants::CRC_LEN;
 use crate::constants::PREAMBLE_LEN;
 use crate::constants::V1_CHECKSUM_LEN;
@@ -48,265 +43,6 @@ pub trait MspPayload: Sized {
     /// Returns [`MspEncodeError::BufferTooSmall`] if `buffer` has fewer than
     /// [`Self::payload_size`] bytes.
     fn to_bytes(&self, buffer: &mut [u8]) -> Result<usize, MspEncodeError>;
-}
-
-/// Attitude in the integer units transmitted by `MSP_ATTITUDE`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct MspAttitude {
-    pub roll_decidegrees: i16,
-    pub pitch_decidegrees: i16,
-    pub yaw_degrees: i16,
-}
-
-impl MspPayload for MspAttitude {
-    const COMMAND_ID: u16 = MSP_ATTITUDE;
-    const MIN_PAYLOAD_SIZE: usize = 6;
-
-    fn from_bytes(data: &[u8]) -> Result<Self, MspDecodeError> {
-        let [r0, r1, p0, p1, y0, y1] =
-            prefix::<{ Self::MIN_PAYLOAD_SIZE }>(Self::COMMAND_ID, data)?;
-        Ok(Self {
-            roll_decidegrees: i16::from_le_bytes([r0, r1]),
-            pitch_decidegrees: i16::from_le_bytes([p0, p1]),
-            yaw_degrees: i16::from_le_bytes([y0, y1]),
-        })
-    }
-
-    fn to_bytes(&self, buffer: &mut [u8]) -> Result<usize, MspEncodeError> {
-        let [r0, r1] = self.roll_decidegrees.to_le_bytes();
-        let [p0, p1] = self.pitch_decidegrees.to_le_bytes();
-        let [y0, y1] = self.yaw_degrees.to_le_bytes();
-        *prefix_mut::<{ Self::MIN_PAYLOAD_SIZE }>(buffer)? = [r0, r1, p0, p1, y0, y1];
-        Ok(Self::MIN_PAYLOAD_SIZE)
-    }
-}
-
-impl TryFrom<&[u8]> for MspAttitude {
-    type Error = MspDecodeError;
-
-    fn try_from(payload: &[u8]) -> Result<Self, Self::Error> {
-        Self::from_bytes(payload)
-    }
-}
-
-/// `MSP_RAW_IMU` values in X, Y, Z order.
-///
-/// Values retain their wire representation. Sensor scaling depends on the
-/// flight controller firmware; no universal physical-unit conversion is applied.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct MspRawImu {
-    pub acc: [i16; 3],
-    pub gyro: [i16; 3],
-    pub mag: [i16; 3],
-}
-
-impl MspPayload for MspRawImu {
-    const COMMAND_ID: u16 = MSP_RAW_IMU;
-    const MIN_PAYLOAD_SIZE: usize = 18;
-
-    fn from_bytes(data: &[u8]) -> Result<Self, MspDecodeError> {
-        let [
-            a0,
-            a1,
-            a2,
-            a3,
-            a4,
-            a5,
-            g0,
-            g1,
-            g2,
-            g3,
-            g4,
-            g5,
-            m0,
-            m1,
-            m2,
-            m3,
-            m4,
-            m5,
-        ] = prefix::<{ Self::MIN_PAYLOAD_SIZE }>(Self::COMMAND_ID, data)?;
-        Ok(Self {
-            acc: [
-                i16::from_le_bytes([a0, a1]),
-                i16::from_le_bytes([a2, a3]),
-                i16::from_le_bytes([a4, a5]),
-            ],
-            gyro: [
-                i16::from_le_bytes([g0, g1]),
-                i16::from_le_bytes([g2, g3]),
-                i16::from_le_bytes([g4, g5]),
-            ],
-            mag: [
-                i16::from_le_bytes([m0, m1]),
-                i16::from_le_bytes([m2, m3]),
-                i16::from_le_bytes([m4, m5]),
-            ],
-        })
-    }
-
-    fn to_bytes(&self, buffer: &mut [u8]) -> Result<usize, MspEncodeError> {
-        let [ax, ay, az] = self.acc;
-        let [gx, gy, gz] = self.gyro;
-        let [mx, my, mz] = self.mag;
-        let [a0, a1] = ax.to_le_bytes();
-        let [a2, a3] = ay.to_le_bytes();
-        let [a4, a5] = az.to_le_bytes();
-        let [g0, g1] = gx.to_le_bytes();
-        let [g2, g3] = gy.to_le_bytes();
-        let [g4, g5] = gz.to_le_bytes();
-        let [m0, m1] = mx.to_le_bytes();
-        let [m2, m3] = my.to_le_bytes();
-        let [m4, m5] = mz.to_le_bytes();
-        *prefix_mut::<{ Self::MIN_PAYLOAD_SIZE }>(buffer)? = [
-            a0, a1, a2, a3, a4, a5, g0, g1, g2, g3, g4, g5, m0, m1, m2, m3, m4, m5,
-        ];
-        Ok(Self::MIN_PAYLOAD_SIZE)
-    }
-}
-
-impl TryFrom<&[u8]> for MspRawImu {
-    type Error = MspDecodeError;
-
-    fn try_from(payload: &[u8]) -> Result<Self, Self::Error> {
-        Self::from_bytes(payload)
-    }
-}
-
-/// Altitude and vertical speed transmitted by `MSP_ALTITUDE`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct MspAltitude {
-    pub altitude_cm: i32,
-    pub vario_cm_s: i16,
-}
-
-impl MspPayload for MspAltitude {
-    const COMMAND_ID: u16 = MSP_ALTITUDE;
-    const MIN_PAYLOAD_SIZE: usize = 6;
-
-    fn from_bytes(data: &[u8]) -> Result<Self, MspDecodeError> {
-        let [a0, a1, a2, a3, v0, v1] =
-            prefix::<{ Self::MIN_PAYLOAD_SIZE }>(Self::COMMAND_ID, data)?;
-        Ok(Self {
-            altitude_cm: i32::from_le_bytes([a0, a1, a2, a3]),
-            vario_cm_s: i16::from_le_bytes([v0, v1]),
-        })
-    }
-
-    fn to_bytes(&self, buffer: &mut [u8]) -> Result<usize, MspEncodeError> {
-        let [a0, a1, a2, a3] = self.altitude_cm.to_le_bytes();
-        let [v0, v1] = self.vario_cm_s.to_le_bytes();
-        *prefix_mut::<{ Self::MIN_PAYLOAD_SIZE }>(buffer)? = [a0, a1, a2, a3, v0, v1];
-        Ok(Self::MIN_PAYLOAD_SIZE)
-    }
-}
-
-impl TryFrom<&[u8]> for MspAltitude {
-    type Error = MspDecodeError;
-
-    fn try_from(payload: &[u8]) -> Result<Self, Self::Error> {
-        Self::from_bytes(payload)
-    }
-}
-
-/// Supported polling requests and telemetry responses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[non_exhaustive]
-pub enum MspMessage {
-    AttitudeRequest,
-    Attitude(MspAttitude),
-    RawImuRequest,
-    RawImu(MspRawImu),
-    AltitudeRequest,
-    Altitude(MspAltitude),
-}
-
-impl MspMessage {
-    /// Returns the MSP command ID implied by this message.
-    #[must_use]
-    pub const fn command_id(&self) -> u16 {
-        match self {
-            Self::AttitudeRequest | Self::Attitude(_) => MSP_ATTITUDE,
-            Self::RawImuRequest | Self::RawImu(_) => MSP_RAW_IMU,
-            Self::AltitudeRequest | Self::Altitude(_) => MSP_ALTITUDE,
-        }
-    }
-
-    /// Returns the request or response direction implied by this message.
-    #[must_use]
-    pub const fn direction(&self) -> MspDirection {
-        match self {
-            Self::AttitudeRequest | Self::RawImuRequest | Self::AltitudeRequest => {
-                MspDirection::Request
-            }
-            Self::Attitude(_) | Self::RawImu(_) | Self::Altitude(_) => MspDirection::Response,
-        }
-    }
-}
-
-/// An owned decoded packet, independent of the parser and its input bytes.
-///
-/// Wire bytes, checksums, and ignored trailing payload bytes are not retained.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct MspPacket {
-    pub version: MspVersion,
-    pub flags: u8,
-    pub message: MspMessage,
-}
-
-impl MspPacket {
-    #[must_use]
-    pub const fn command_id(&self) -> u16 {
-        self.message.command_id()
-    }
-
-    #[must_use]
-    pub const fn direction(&self) -> MspDirection {
-        self.message.direction()
-    }
-
-    /// Serializes this packet as a complete MSP wire frame into `buffer`,
-    /// returning the total frame length in bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MspEncodeError::BufferTooSmall`] if `buffer` cannot hold the complete wire frame,
-    /// [`MspEncodeError::InvalidV1Command`] if `version` is [`MspVersion::V1`] and the command ID
-    /// is at least 255, or [`MspEncodeError::PayloadTooLarge`] if the payload exceeds wire limits.
-    pub fn to_bytes(&self, buffer: &mut [u8]) -> Result<usize, MspEncodeError> {
-        match &self.message {
-            MspMessage::AttitudeRequest
-            | MspMessage::RawImuRequest
-            | MspMessage::AltitudeRequest => {
-                write_request_to_buffer(buffer, self.version, self.flags, self.command_id())
-            }
-            MspMessage::Attitude(attitude) => write_packet_to_buffer(
-                buffer,
-                self.version,
-                MspDirection::Response,
-                self.flags,
-                attitude,
-            ),
-            MspMessage::RawImu(imu) => write_packet_to_buffer(
-                buffer,
-                self.version,
-                MspDirection::Response,
-                self.flags,
-                imu,
-            ),
-            MspMessage::Altitude(altitude) => write_packet_to_buffer(
-                buffer,
-                self.version,
-                MspDirection::Response,
-                self.flags,
-                altitude,
-            ),
-        }
-    }
 }
 
 /// Why a validated frame could not be decoded as a supported packet.
@@ -409,15 +145,255 @@ impl core::fmt::Display for MspEncodeError {
 
 impl core::error::Error for MspEncodeError {}
 
-fn prefix<const N: usize>(command_id: u16, payload: &[u8]) -> Result<[u8; N], MspDecodeError> {
-    payload
-        .get(..N)
-        .and_then(|bytes| bytes.try_into().ok())
-        .ok_or(MspDecodeError::PayloadTooShort {
+/// Sequential zero-copy reader for decoding little-endian MSP payload fields.
+///
+/// Similar to Betaflight's `sbuf_t` reader helpers (`sbufReadU8`, `sbufReadU16`, etc.),
+/// tracking the cumulative byte offset and producing [`MspDecodeError::PayloadTooShort`]
+/// on underflow.
+#[derive(Debug, Clone)]
+pub(crate) struct PayloadReader<'a> {
+    command_id: u16,
+    data: &'a [u8],
+    pos: usize,
+    min_required: usize,
+}
+
+impl<'a> PayloadReader<'a> {
+    /// Creates a reader that validates `data.len() >= min_required` upfront.
+    #[inline]
+    pub(crate) fn with_min_size(
+        command_id: u16,
+        data: &'a [u8],
+        min_required: usize,
+    ) -> Result<Self, MspDecodeError> {
+        if data.len() < min_required {
+            return Err(MspDecodeError::PayloadTooShort {
+                command_id,
+                required: min_required,
+                actual: data.len(),
+            });
+        }
+        Ok(Self {
             command_id,
-            required: N,
-            actual: payload.len(),
+            data,
+            pos: 0,
+            min_required,
         })
+    }
+
+    /// Creates a reader without upfront minimum size check (requirement grows as fields are read).
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) const fn new(command_id: u16, data: &'a [u8]) -> Self {
+        Self {
+            command_id,
+            data,
+            pos: 0,
+            min_required: 0,
+        }
+    }
+
+    /// Returns the unread trailing slice of the payload.
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) fn remaining(&self) -> &'a [u8] {
+        self.data.get(self.pos..).unwrap_or(&[])
+    }
+
+    /// Returns the number of unread bytes remaining.
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) const fn remaining_len(&self) -> usize {
+        self.data.len().saturating_sub(self.pos)
+    }
+
+    /// Borrows `len` bytes from the cursor and advances it.
+    #[inline]
+    pub(crate) fn read_bytes(&mut self, len: usize) -> Result<&'a [u8], MspDecodeError> {
+        let next_pos = self
+            .pos
+            .checked_add(len)
+            .ok_or(MspDecodeError::PayloadTooShort {
+                command_id: self.command_id,
+                required: usize::MAX,
+                actual: self.data.len(),
+            })?;
+        let required = next_pos.max(self.min_required);
+        let slice = self
+            .data
+            .get(self.pos..next_pos)
+            .ok_or(MspDecodeError::PayloadTooShort {
+                command_id: self.command_id,
+                required,
+                actual: self.data.len(),
+            })?;
+        self.pos = next_pos;
+        Ok(slice)
+    }
+
+    /// Copies a fixed-size byte array `[u8; N]` from the cursor and advances it.
+    #[inline]
+    pub(crate) fn read_array<const N: usize>(&mut self) -> Result<[u8; N], MspDecodeError> {
+        let slice = self.read_bytes(N)?;
+        let required = self.pos.max(self.min_required);
+        slice
+            .try_into()
+            .map_err(|_| MspDecodeError::PayloadTooShort {
+                command_id: self.command_id,
+                required,
+                actual: self.data.len(),
+            })
+    }
+
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) fn read_u8(&mut self) -> Result<u8, MspDecodeError> {
+        let [b0] = self.read_array::<1>()?;
+        Ok(b0)
+    }
+
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) fn read_i8(&mut self) -> Result<i8, MspDecodeError> {
+        let [b0] = self.read_array::<1>()?;
+        Ok(i8::from_le_bytes([b0]))
+    }
+
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) fn read_u16(&mut self) -> Result<u16, MspDecodeError> {
+        Ok(u16::from_le_bytes(self.read_array::<2>()?))
+    }
+
+    #[inline]
+    pub(crate) fn read_i16(&mut self) -> Result<i16, MspDecodeError> {
+        Ok(i16::from_le_bytes(self.read_array::<2>()?))
+    }
+
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) fn read_u32(&mut self) -> Result<u32, MspDecodeError> {
+        Ok(u32::from_le_bytes(self.read_array::<4>()?))
+    }
+
+    #[inline]
+    pub(crate) fn read_i32(&mut self) -> Result<i32, MspDecodeError> {
+        Ok(i32::from_le_bytes(self.read_array::<4>()?))
+    }
+
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) fn read_u64(&mut self) -> Result<u64, MspDecodeError> {
+        Ok(u64::from_le_bytes(self.read_array::<8>()?))
+    }
+}
+
+/// Sequential writer for encoding little-endian MSP payload fields into a caller buffer.
+#[derive(Debug)]
+pub(crate) struct PayloadWriter<'a> {
+    buffer: &'a mut [u8],
+    pos: usize,
+    min_required: usize,
+}
+
+impl<'a> PayloadWriter<'a> {
+    /// Creates a writer that validates `buffer.len() >= min_required` upfront.
+    #[inline]
+    pub(crate) fn with_min_size(
+        buffer: &'a mut [u8],
+        min_required: usize,
+    ) -> Result<Self, MspEncodeError> {
+        let actual = buffer.len();
+        if actual < min_required {
+            return Err(MspEncodeError::BufferTooSmall {
+                required: min_required,
+                actual,
+            });
+        }
+        Ok(Self {
+            buffer,
+            pos: 0,
+            min_required,
+        })
+    }
+
+    /// Creates a writer without upfront minimum size check (requirement grows as fields are written).
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) const fn new(buffer: &'a mut [u8]) -> Self {
+        Self {
+            buffer,
+            pos: 0,
+            min_required: 0,
+        }
+    }
+
+    /// Returns the total number of bytes written so far.
+    #[inline]
+    pub(crate) const fn written(&self) -> usize {
+        self.pos
+    }
+
+    /// Writes `bytes` into the buffer at the current cursor position and advances it.
+    #[inline]
+    pub(crate) fn write_bytes(&mut self, bytes: &[u8]) -> Result<(), MspEncodeError> {
+        let actual = self.buffer.len();
+        let next_pos = self
+            .pos
+            .checked_add(bytes.len())
+            .ok_or(MspEncodeError::BufferTooSmall {
+                required: usize::MAX,
+                actual,
+            })?;
+        let required = next_pos.max(self.min_required);
+        let dst = self
+            .buffer
+            .get_mut(self.pos..next_pos)
+            .ok_or(MspEncodeError::BufferTooSmall { required, actual })?;
+        dst.copy_from_slice(bytes);
+        self.pos = next_pos;
+        Ok(())
+    }
+
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) fn write_u8(&mut self, value: u8) -> Result<(), MspEncodeError> {
+        self.write_bytes(&[value])
+    }
+
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) fn write_i8(&mut self, value: i8) -> Result<(), MspEncodeError> {
+        self.write_bytes(&value.to_le_bytes())
+    }
+
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) fn write_u16(&mut self, value: u16) -> Result<(), MspEncodeError> {
+        self.write_bytes(&value.to_le_bytes())
+    }
+
+    #[inline]
+    pub(crate) fn write_i16(&mut self, value: i16) -> Result<(), MspEncodeError> {
+        self.write_bytes(&value.to_le_bytes())
+    }
+
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) fn write_u32(&mut self, value: u32) -> Result<(), MspEncodeError> {
+        self.write_bytes(&value.to_le_bytes())
+    }
+
+    #[inline]
+    pub(crate) fn write_i32(&mut self, value: i32) -> Result<(), MspEncodeError> {
+        self.write_bytes(&value.to_le_bytes())
+    }
+
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) fn write_u64(&mut self, value: u64) -> Result<(), MspEncodeError> {
+        self.write_bytes(&value.to_le_bytes())
+    }
 }
 
 fn prefix_mut<const N: usize>(buffer: &mut [u8]) -> Result<&mut [u8; N], MspEncodeError> {
@@ -789,123 +765,80 @@ pub fn write_request_to_buffer(
     )
 }
 
-fn decode_command<P: MspPayload>(
-    direction: MspDirection,
-    payload: &[u8],
-    request: MspMessage,
-    wrap: fn(P) -> MspMessage,
-) -> Result<MspMessage, MspDecodeError> {
-    match direction {
-        MspDirection::Error => Err(MspDecodeError::RemoteError {
-            command_id: P::COMMAND_ID,
-        }),
-        MspDirection::Request => Ok(request),
-        MspDirection::Response => P::from_bytes(payload).map(wrap),
-    }
-}
+#[cfg(test)]
+#[expect(
+    clippy::unwrap_used,
+    reason = "tests use unwrap for concise assertions"
+)]
+mod tests {
+    use super::*;
 
-impl TryFrom<MspFrame<'_>> for MspPacket {
-    type Error = MspDecodeError;
+    #[test]
+    fn payload_reader_and_writer_roundtrip_primitives() {
+        let mut buf = [0u8; 25];
+        let mut writer = PayloadWriter::with_min_size(&mut buf, 22).unwrap();
+        writer.write_u8(0x12).unwrap();
+        writer.write_i8(-42).unwrap();
+        writer.write_u16(0x3456).unwrap();
+        writer.write_i16(-12345).unwrap();
+        writer.write_u32(0x789a_bcde).unwrap();
+        writer.write_i32(-123_456_789).unwrap();
+        writer.write_u64(0x0123_4567_89ab_cdef).unwrap();
+        writer.write_bytes(b"xy").unwrap();
+        assert_eq!(writer.written(), 24);
 
-    /// Decodes the known response prefix, ignoring extra payload bytes.
-    /// Polling request payloads are ignored. The frame is already validated,
-    /// including checksums covering all declared payload bytes.
-    fn try_from(frame: MspFrame<'_>) -> Result<Self, Self::Error> {
-        let command_id = frame.command_id();
-        let direction = frame.direction();
-        let payload = frame.payload();
-        let message = match command_id {
-            MSP_ATTITUDE => decode_command(
-                direction,
-                payload,
-                MspMessage::AttitudeRequest,
-                MspMessage::Attitude,
-            )?,
-            MSP_RAW_IMU => decode_command(
-                direction,
-                payload,
-                MspMessage::RawImuRequest,
-                MspMessage::RawImu,
-            )?,
-            MSP_ALTITUDE => decode_command(
-                direction,
-                payload,
-                MspMessage::AltitudeRequest,
-                MspMessage::Altitude,
-            )?,
-            _ => return Err(MspDecodeError::UnsupportedCommand { command_id }),
-        };
-        Ok(Self {
-            version: frame.version(),
-            flags: frame.flags(),
-            message,
-        })
-    }
-}
-
-impl<const N: usize> MspParser<N> {
-    /// Consumes the next validated frame and decodes it into an owned packet.
-    ///
-    /// Incomplete input is retained according to the same spill-buffer rules
-    /// as [`Self::next`].
-    ///
-    /// # Errors
-    ///
-    /// Decode errors consume one frame and allow parsing to continue.
-    pub fn next_packet(&mut self, input: &mut &[u8]) -> Result<Option<MspPacket>, MspDecodeError> {
-        self.next(input).map(MspPacket::try_from).transpose()
+        let mut reader = PayloadReader::with_min_size(108, &buf, 22).unwrap();
+        assert_eq!(reader.read_u8().unwrap(), 0x12);
+        assert_eq!(reader.read_i8().unwrap(), -42);
+        assert_eq!(reader.read_u16().unwrap(), 0x3456);
+        assert_eq!(reader.read_i16().unwrap(), -12345);
+        assert_eq!(reader.read_u32().unwrap(), 0x789a_bcde);
+        assert_eq!(reader.read_i32().unwrap(), -123_456_789);
+        assert_eq!(reader.read_u64().unwrap(), 0x0123_4567_89ab_cdef);
+        assert_eq!(reader.read_array::<2>().unwrap(), *b"xy");
+        assert_eq!(reader.remaining_len(), 1);
+        assert_eq!(reader.remaining(), &[0]);
     }
 
-    /// Iterates over owned packets, advancing the caller's input cursor.
-    ///
-    /// Decode errors are yielded and iteration continues. Incomplete input ends
-    /// this iterator; create another with the next chunk to continue parsing.
-    /// Dropping early leaves the cursor at the first unconsumed byte.
-    pub fn packets<'a, 'input>(
-        &'a mut self,
-        input: &'a mut &'input [u8],
-    ) -> MspPackets<'a, 'input, N> {
-        MspPackets {
-            parser: self,
-            input,
-        }
-    }
-}
+    #[test]
+    fn payload_reader_and_writer_report_accurate_bounds_errors() {
+        assert_eq!(
+            PayloadReader::with_min_size(108, &[1, 2, 3], 6).unwrap_err(),
+            MspDecodeError::PayloadTooShort {
+                command_id: 108,
+                required: 6,
+                actual: 3,
+            }
+        );
 
-/// An iterator borrowing a parser and input cursor, yielding owned packets.
-#[must_use = "iterators do nothing unless consumed"]
-pub struct MspPackets<'a, 'input, const N: usize> {
-    parser: &'a mut MspParser<N>,
-    input: &'a mut &'input [u8],
-}
+        let mut reader = PayloadReader::new(109, &[1, 2, 3]);
+        assert_eq!(reader.read_u16(), Ok(0x0201));
+        assert_eq!(
+            reader.read_u16(),
+            Err(MspDecodeError::PayloadTooShort {
+                command_id: 109,
+                required: 4,
+                actual: 3,
+            })
+        );
 
-impl<const N: usize> core::fmt::Debug for MspPackets<'_, '_, N> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("MspPackets")
-            .field("parser", &self.parser)
-            .field("remaining_len", &self.input.len())
-            .finish()
-    }
-}
+        let mut short_buf = [0u8; 3];
+        assert_eq!(
+            PayloadWriter::with_min_size(&mut short_buf, 6).unwrap_err(),
+            MspEncodeError::BufferTooSmall {
+                required: 6,
+                actual: 3,
+            }
+        );
 
-#[cfg(feature = "defmt")]
-impl<const N: usize> defmt::Format for MspPackets<'_, '_, N> {
-    fn format(&self, f: defmt::Formatter) {
-        defmt::write!(
-            f,
-            "MspPackets {{ parser: {}, remaining_len: {} }}",
-            self.parser,
-            self.input.len()
+        let mut writer = PayloadWriter::new(&mut short_buf);
+        assert_eq!(writer.write_u16(0x1234), Ok(()));
+        assert_eq!(
+            writer.write_u16(0x5678),
+            Err(MspEncodeError::BufferTooSmall {
+                required: 4,
+                actual: 3,
+            })
         );
     }
 }
-
-impl<const N: usize> Iterator for MspPackets<'_, '_, N> {
-    type Item = Result<MspPacket, MspDecodeError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.parser.next_packet(self.input).transpose()
-    }
-}
-
-impl<const N: usize> core::iter::FusedIterator for MspPackets<'_, '_, N> {}
