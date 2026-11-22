@@ -1,0 +1,81 @@
+name: Release-plz
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  release-plz-release:
+    name: Release-plz release
+    runs-on: ubuntu-latest
+    if: ${{ github.repository == 'jettify/uf-msp' }}
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_PLZ_TOKEN }}
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          targets: thumbv7em-none-eabihf
+          components: clippy, rustfmt
+      - name: Install libudev
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+      - name: Verify release
+        run: |
+          make ci
+          cargo check --locked --lib --all-features --target thumbv7em-none-eabihf
+          RUSTDOCFLAGS="-D warnings" cargo doc --locked --all-features --no-deps
+          cargo package --locked --all-features
+      - name: Install release tools for the runner
+        uses: taiki-e/install-action@v2
+        with:
+          tool: release-plz@0.4.3,cargo-semver-checks@0.51
+      - name: Configure release commit identity
+        uses: release-plz/git-config@59144859caf016f8b817a2ac9b051578729173c4
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+      - name: Run release-plz
+        run: release-plz release --git-token "$GITHUB_TOKEN" --forge github
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  release-plz-pr:
+    name: Release-plz PR
+    runs-on: ubuntu-latest
+    if: ${{ github.repository == 'jettify/uf-msp' }}
+    permissions:
+      pull-requests: write
+      contents: write
+    concurrency:
+      group: release-plz-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_PLZ_TOKEN }}
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.95.0
+      - name: Install release tools for the runner
+        uses: taiki-e/install-action@v2
+        with:
+          tool: release-plz@0.4.3,cargo-semver-checks@0.51
+      - name: Configure release commit identity
+        uses: release-plz/git-config@59144859caf016f8b817a2ac9b051578729173c4
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+      - name: Run release-plz
+        run: >-
+          release-plz release-pr --git-token "$GITHUB_TOKEN" --forge github
+          --repo-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

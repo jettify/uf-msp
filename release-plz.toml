@@ -1,0 +1,16 @@
+[workspace]
+# Publish after merging the release PR, including for the initial release.
+release_always = false
+publish_all_features = true
+publish_no_verify = false
+
+[changelog]
+commit_preprocessors = [
+  # Replace the issue number with the link.
+  { pattern = "\\(#([0-9]+)\\)", replace = "([#${1}](https://github.com/jettify/uf-msp/issues/${1}))" },
+]
+
+link_parsers = [
+  # Extract GitHub issue and PR references.
+  { pattern = "#(\\d+)", href = "https://github.com/jettify/uf-msp/issues/$1" },
+]
