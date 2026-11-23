@@ -1,3 +1,14 @@
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        reason = "tests and their fixture helpers use these to fail on unexpected values"
+    )
+)]
+
 use uf_msp::MspAltitude;
 use uf_msp::MspAttitude;
 use uf_msp::MspDecodeError;
@@ -54,7 +65,7 @@ fn wire(version: MspVersion, direction: u8, command: u16, payload: &[u8]) -> Vec
                 bytes.extend_from_slice(&u16::try_from(payload.len()).unwrap().to_le_bytes());
             }
             bytes.extend_from_slice(body);
-            bytes.push(bytes[3..].iter().fold(0, |sum, byte| sum ^ byte));
+            bytes.push(bytes.iter().skip(3).fold(0, |sum, byte| sum ^ byte));
             bytes
         }
         _ => unreachable!(),
@@ -98,6 +109,10 @@ fn samples() -> [(MspMessage, Vec<u8>); 3] {
 }
 
 #[test]
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "only the response variants in samples have request fixtures here"
+)]
 fn responses_and_requests_across_formats_and_every_split() {
     for version in VERSIONS {
         for (response, payload) in samples() {
@@ -583,12 +598,13 @@ where
     assert_eq!(exact, wire_bytes);
     assert_eq!(P::from_bytes(&exact), Ok(expected));
 
-    let mut oversized = vec![0xee_u8; P::MIN_PAYLOAD_SIZE + 4];
+    let mut oversized = vec![0xee_u8; P::MIN_PAYLOAD_SIZE];
+    oversized.extend_from_slice(&[0xee; 4]);
     assert_eq!(expected.to_bytes(&mut oversized), Ok(P::MIN_PAYLOAD_SIZE));
-    assert_eq!(&oversized[..P::MIN_PAYLOAD_SIZE], wire_bytes);
+    let (written, trailing) = oversized.split_at_checked(P::MIN_PAYLOAD_SIZE).unwrap();
+    assert_eq!(written, wire_bytes);
     assert_eq!(
-        &oversized[P::MIN_PAYLOAD_SIZE..],
-        &[0xee; 4],
+        trailing, &[0xee; 4],
         "to_bytes must not clobber trailing bytes"
     );
     assert_eq!(P::from_bytes(&oversized), Ok(expected));
@@ -603,7 +619,7 @@ where
             })
         );
         assert_eq!(
-            P::from_bytes(&wire_bytes[..short_len]),
+            P::from_bytes(wire_bytes.get(..short_len).unwrap()),
             Err(MspDecodeError::PayloadTooShort {
                 command_id: P::COMMAND_ID,
                 required: P::MIN_PAYLOAD_SIZE,
@@ -614,6 +630,10 @@ where
 }
 
 #[test]
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "only the response variants in samples have payload fixtures here"
+)]
 fn per_message_payload_codecs_roundtrip_and_check_lengths() {
     for (message, payload) in samples() {
         match message {
@@ -1065,7 +1085,8 @@ fn assert_packets_roundtrip_on_versions(versions: &[MspVersion], cases: &[(MspMe
             for split in [0, 1, expected_wire.len() / 2, expected_wire.len()] {
                 let mut parser = MspParser::<128>::new();
                 let mut decoded = Vec::new();
-                for chunk in [&expected_wire[..split], &expected_wire[split..]] {
+                let (first, second) = expected_wire.split_at_checked(split).unwrap();
+                for chunk in [first, second] {
                     let mut input = chunk;
                     decoded.extend(parser.packets(&mut input).map(Result::unwrap));
                 }

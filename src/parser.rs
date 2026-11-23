@@ -60,14 +60,14 @@ impl MspDirection {
 #[must_use]
 const fn crc8_dvbs2_byte(mut crc: u8, byte: u8) -> u8 {
     crc ^= byte;
-    let mut bit = 0;
-    while bit < 8 {
+    let mut bits = u8::BITS;
+    while bits != 0 {
         if (crc & 0x80) != 0 {
             crc = (crc << 1) ^ CRC8_DVBS2_POLY;
         } else {
             crc <<= 1;
         }
-        bit += 1;
+        bits = bits.saturating_sub(1);
     }
     crc
 }
@@ -201,10 +201,12 @@ impl ValidatedFrameMetadata {
             MspVersion::V2OverV1 => CRC_LEN + V1_CHECKSUM_LEN,
             MspVersion::V2 => CRC_LEN,
         };
-        let payload = bytes
-            .get(self.payload_offset..self.len - trailer_len)
+        let payload = self
+            .len
+            .checked_sub(trailer_len)
+            .and_then(|end| bytes.get(self.payload_offset..end))
             .ok_or(MspFrameError::Incomplete {
-                required: self.payload_offset + trailer_len,
+                required: self.payload_offset.saturating_add(trailer_len),
                 actual: bytes.len(),
             })?;
         Ok(MspFrame {
@@ -256,14 +258,10 @@ fn inspect_v2_frame(bytes: &[u8]) -> FrameInspection {
     if bytes.len() < frame_len {
         return FrameInspection::Incomplete(frame_len);
     }
-    let checksum_idx = frame_len - CRC_LEN;
-    let Some(crc_slice) = bytes.get(PREAMBLE_LEN..checksum_idx) else {
-        return FrameInspection::Invalid(MspFrameError::LengthMismatch {
-            expected: frame_len,
-            actual: bytes.len(),
-        });
-    };
-    let Some(&received_crc) = bytes.get(checksum_idx) else {
+    let Some((&received_crc, crc_slice)) = bytes
+        .get(PREAMBLE_LEN..frame_len)
+        .and_then(|s| s.split_last())
+    else {
         return FrameInspection::Invalid(MspFrameError::LengthMismatch {
             expected: frame_len,
             actual: bytes.len(),
@@ -319,7 +317,7 @@ fn inspect_v1_frame(bytes: &[u8]) -> FrameInspection {
         V1_HEADER_LEN
     };
     let jumbo_len = if is_jumbo { V1_JUMBO_LENGTH_LEN } else { 0 };
-    let payload_offset = jumbo_len_offset + jumbo_len;
+    let payload_offset = jumbo_len_offset.saturating_add(jumbo_len);
     let Some(full_header) = bytes.get(..payload_offset) else {
         return FrameInspection::Incomplete(payload_offset);
     };
@@ -357,7 +355,10 @@ fn inspect_v1_frame(bytes: &[u8]) -> FrameInspection {
         (MspVersion::V1, 0, u16::from(command_field))
     };
 
-    let Some(frame_len) = usize::from(outer_size).checked_add(V1_MIN_FRAME_LEN + jumbo_len) else {
+    let Some(frame_len) = usize::from(outer_size)
+        .checked_add(V1_MIN_FRAME_LEN)
+        .and_then(|len| len.checked_add(jumbo_len))
+    else {
         return FrameInspection::Invalid(MspFrameError::LengthOverflow);
     };
     let Some(frame_bytes) = bytes.get(..frame_len) else {
@@ -399,12 +400,13 @@ fn validate_encapsulated_crc(
     payload_offset: usize,
 ) -> Result<(), FrameInspection> {
     let frame_len = frame_bytes.len();
-    let outer_checksum_idx = frame_len - V1_CHECKSUM_LEN;
     let Some(inner_header) = frame_bytes.get(V1_HEADER_LEN..V2_OVER_V1_HEADER_LEN) else {
         return Err(FrameInspection::Incomplete(V2_OVER_V1_HEADER_LEN));
     };
     let Some((&received_crc, payload)) = frame_bytes
-        .get(payload_offset..outer_checksum_idx)
+        .get(payload_offset..)
+        .and_then(|s| s.split_last())
+        .map(|(_, inner)| inner)
         .and_then(|s| s.split_last())
     else {
         return Err(FrameInspection::Incomplete(frame_len));
@@ -486,11 +488,10 @@ impl<const N: usize> MspParser<N> {
         let Some(remaining) = bytes.get(1..) else {
             return 0;
         };
-        let offset = remaining
+        remaining
             .iter()
             .position(|&byte| byte == b'$')
-            .unwrap_or(remaining.len());
-        1 + offset
+            .map_or(bytes.len(), |offset| offset.saturating_add(1))
     }
 
     /// Skips a rejected candidate and scans for the next possible preamble.
@@ -514,7 +515,7 @@ impl<const N: usize> MspParser<N> {
     fn compact(&mut self) {
         if self.start > 0 && self.start <= self.end && self.end <= N {
             self.buffer.copy_within(self.start..self.end, 0);
-            self.end -= self.start;
+            self.end = self.end.saturating_sub(self.start);
             self.start = 0;
         }
     }
@@ -649,12 +650,6 @@ impl<const N: usize> Default for MspParser<N> {
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    reason = "tests use unwrap, expect, and direct slice indexing for conciseness"
-)]
 mod tests {
     extern crate std;
 
@@ -670,7 +665,8 @@ mod tests {
     }
 
     fn v1_frame(payload: &[u8], encapsulated: bool, jumbo: bool) -> Vec<u8> {
-        let outer_len = payload.len() + if encapsulated { 6 } else { 0 };
+        let overhead = if encapsulated { V2_INNER_OVERHEAD } else { 0 };
+        let outer_len = payload.len().checked_add(overhead).unwrap();
         let mut bytes = std::vec![
             b'$',
             b'M',

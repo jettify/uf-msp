@@ -149,10 +149,11 @@ impl MspPayload for MspRawGps {
     const MIN_PAYLOAD_SIZE: usize = 16;
 
     fn payload_size(&self) -> usize {
-        Self::MIN_PAYLOAD_SIZE
-            + self
-                .dop
-                .map_or(0, |dop| 2 + 5 * usize::from(dop.extended.is_some()))
+        match &self.dop {
+            None => Self::MIN_PAYLOAD_SIZE,
+            Some(dop) if dop.extended.is_some() => Self::MIN_PAYLOAD_SIZE + 2 + 5,
+            Some(_) => Self::MIN_PAYLOAD_SIZE + 2,
+        }
     }
 
     fn from_bytes(data: &[u8]) -> Result<Self, MspDecodeError> {

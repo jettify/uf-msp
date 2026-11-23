@@ -1,3 +1,5 @@
+use core::mem::size_of_val;
+
 use crate::CapacityError;
 use crate::MspDecodeError;
 use crate::MspEncodeError;
@@ -13,7 +15,8 @@ pub const MAX_RC_CHANNELS: usize = 18;
 type Channels = heapless::Vec<u16, MAX_RC_CHANNELS, u8>;
 
 fn copy_channels(channels: &[u16]) -> Result<Channels, CapacityError> {
-    Channels::from_slice(channels).map_err(|_| CapacityError::new(MAX_RC_CHANNELS, channels.len()))
+    Channels::from_slice(channels)
+        .map_err(|_capacity_error| CapacityError::new(MAX_RC_CHANNELS, channels.len()))
 }
 
 fn decode_channels(command_id: u16, data: &[u8]) -> Result<Channels, MspDecodeError> {
@@ -34,7 +37,7 @@ fn decode_channels(command_id: u16, data: &[u8]) -> Result<Channels, MspDecodeEr
         let ch = reader.read_u16()?;
         channels
             .push(ch)
-            .map_err(|_| MspDecodeError::CapacityExceeded {
+            .map_err(|_rejected_channel| MspDecodeError::CapacityExceeded {
                 command_id,
                 capacity: MAX_RC_CHANNELS,
                 requested: count,
@@ -44,7 +47,7 @@ fn decode_channels(command_id: u16, data: &[u8]) -> Result<Channels, MspDecodeEr
 }
 
 fn encode_channels(channels: &[u16], buffer: &mut [u8]) -> Result<usize, MspEncodeError> {
-    let mut writer = PayloadWriter::with_min_size(buffer, channels.len() * 2)?;
+    let mut writer = PayloadWriter::with_min_size(buffer, size_of_val(channels))?;
     for &ch in channels {
         writer.write_u16(ch)?;
     }
@@ -80,7 +83,7 @@ impl MspPayload for MspRc {
     const MIN_PAYLOAD_SIZE: usize = 0;
 
     fn payload_size(&self) -> usize {
-        self.channels.len() * 2
+        size_of_val(self.channels())
     }
 
     fn from_bytes(data: &[u8]) -> Result<Self, MspDecodeError> {
@@ -123,7 +126,7 @@ impl MspPayload for MspSetRawRc {
     const MIN_PAYLOAD_SIZE: usize = 0;
 
     fn payload_size(&self) -> usize {
-        self.channels.len() * 2
+        size_of_val(self.channels())
     }
 
     fn from_bytes(data: &[u8]) -> Result<Self, MspDecodeError> {

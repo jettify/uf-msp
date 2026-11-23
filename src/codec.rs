@@ -12,7 +12,6 @@ use crate::constants::V1_JUMBO_LENGTH_LEN;
 use crate::constants::V1_JUMBO_SIZE;
 use crate::constants::V2_HEADER_LEN;
 use crate::constants::V2_INNER_OVERHEAD;
-use crate::constants::V2_MIN_FRAME_LEN;
 use crate::constants::V2_OVER_V1_HEADER_LEN;
 use crate::crc8_dvbs2_slice;
 
@@ -85,7 +84,6 @@ impl<'a> PayloadReader<'a> {
 
     /// Creates a reader without upfront minimum size check (requirement grows as fields are read).
     #[inline]
-    #[allow(dead_code)]
     pub(crate) const fn new(command_id: u16, data: &'a [u8]) -> Self {
         Self {
             command_id,
@@ -96,15 +94,14 @@ impl<'a> PayloadReader<'a> {
     }
 
     /// Returns the unread trailing slice of the payload.
+    #[cfg(test)]
     #[inline]
-    #[allow(dead_code)]
     pub(crate) fn remaining(&self) -> &'a [u8] {
         self.data.get(self.pos..).unwrap_or(&[])
     }
 
     /// Returns the number of unread bytes remaining.
     #[inline]
-    #[allow(dead_code)]
     pub(crate) const fn remaining_len(&self) -> usize {
         self.data.len().saturating_sub(self.pos)
     }
@@ -140,7 +137,7 @@ impl<'a> PayloadReader<'a> {
         let required = self.pos.max(self.min_required);
         slice
             .try_into()
-            .map_err(|_| MspDecodeError::PayloadTooShort {
+            .map_err(|_slice_length_error| MspDecodeError::PayloadTooShort {
                 command_id: self.command_id,
                 required,
                 actual: self.data.len(),
@@ -148,7 +145,6 @@ impl<'a> PayloadReader<'a> {
     }
 
     #[inline]
-    #[allow(dead_code)]
     pub(crate) fn read_u8(&mut self) -> Result<u8, MspDecodeError> {
         let [b0] = self.read_array::<1>()?;
         Ok(b0)
@@ -156,20 +152,18 @@ impl<'a> PayloadReader<'a> {
 
     /// Reads a single byte and interprets `0` as `false` and any non-zero value as `true`.
     #[inline]
-    #[allow(dead_code)]
     pub(crate) fn read_bool(&mut self) -> Result<bool, MspDecodeError> {
         Ok(self.read_u8()? != 0)
     }
 
+    #[cfg(test)]
     #[inline]
-    #[allow(dead_code)]
     pub(crate) fn read_i8(&mut self) -> Result<i8, MspDecodeError> {
         let [b0] = self.read_array::<1>()?;
         Ok(i8::from_le_bytes([b0]))
     }
 
     #[inline]
-    #[allow(dead_code)]
     pub(crate) fn read_u16(&mut self) -> Result<u16, MspDecodeError> {
         Ok(u16::from_le_bytes(self.read_array::<2>()?))
     }
@@ -180,7 +174,6 @@ impl<'a> PayloadReader<'a> {
     }
 
     #[inline]
-    #[allow(dead_code)]
     pub(crate) fn read_u32(&mut self) -> Result<u32, MspDecodeError> {
         Ok(u32::from_le_bytes(self.read_array::<4>()?))
     }
@@ -190,8 +183,8 @@ impl<'a> PayloadReader<'a> {
         Ok(i32::from_le_bytes(self.read_array::<4>()?))
     }
 
+    #[cfg(test)]
     #[inline]
-    #[allow(dead_code)]
     pub(crate) fn read_u64(&mut self) -> Result<u64, MspDecodeError> {
         Ok(u64::from_le_bytes(self.read_array::<8>()?))
     }
@@ -203,41 +196,43 @@ impl<'a> PayloadReader<'a> {
         len: usize,
     ) -> Result<heapless::Vec<u8, N, u8>, MspDecodeError> {
         let bytes = self.read_bytes(len)?;
-        heapless::Vec::from_slice(bytes).map_err(|_| MspDecodeError::CapacityExceeded {
-            command_id: self.command_id,
-            capacity: N,
-            requested: len,
+        heapless::Vec::from_slice(bytes).map_err(|_capacity_error| {
+            MspDecodeError::CapacityExceeded {
+                command_id: self.command_id,
+                capacity: N,
+                requested: len,
+            }
         })
     }
 
     /// Reads a 1-byte length prefix (`u8`) followed by that many bytes.
+    #[cfg(test)]
     #[inline]
-    #[allow(dead_code)]
     pub(crate) fn read_len_prefixed_bytes(&mut self) -> Result<&'a [u8], MspDecodeError> {
         let len = usize::from(self.read_u8()?);
         self.read_bytes(len)
     }
 
     /// Reads a 1-byte length prefix (`u8`) followed by a UTF-8 string slice of that byte length.
+    #[cfg(test)]
     #[inline]
-    #[allow(dead_code)]
     pub(crate) fn read_len_prefixed_str(&mut self) -> Result<&'a str, MspDecodeError> {
         let bytes = self.read_len_prefixed_bytes()?;
-        core::str::from_utf8(bytes).map_err(|_| MspDecodeError::InvalidUtf8 {
+        core::str::from_utf8(bytes).map_err(|_utf8_error| MspDecodeError::InvalidUtf8 {
             command_id: self.command_id,
         })
     }
 
     /// Reads a 1-byte length prefix (`u8`) followed by a UTF-8 string into a `heapless::String<N, u8>`.
+    #[cfg(test)]
     #[inline]
-    #[allow(dead_code)]
     pub(crate) fn read_len_prefixed_string<const N: usize>(
         &mut self,
     ) -> Result<heapless::String<N, u8>, MspDecodeError> {
         let s = self.read_len_prefixed_str()?;
         let mut out = heapless::String::new();
         out.push_str(s)
-            .map_err(|_| MspDecodeError::CapacityExceeded {
+            .map_err(|_capacity_error| MspDecodeError::CapacityExceeded {
                 command_id: self.command_id,
                 capacity: N,
                 requested: s.len(),
@@ -249,7 +244,7 @@ impl<'a> PayloadReader<'a> {
     #[inline]
     pub(crate) fn read_remaining_str(&mut self) -> Result<&'a str, MspDecodeError> {
         let bytes = self.read_bytes(self.remaining_len())?;
-        core::str::from_utf8(bytes).map_err(|_| MspDecodeError::InvalidUtf8 {
+        core::str::from_utf8(bytes).map_err(|_utf8_error| MspDecodeError::InvalidUtf8 {
             command_id: self.command_id,
         })
     }
@@ -262,7 +257,7 @@ impl<'a> PayloadReader<'a> {
         let s = self.read_remaining_str()?;
         let mut out = heapless::String::new();
         out.push_str(s)
-            .map_err(|_| MspDecodeError::CapacityExceeded {
+            .map_err(|_capacity_error| MspDecodeError::CapacityExceeded {
                 command_id: self.command_id,
                 capacity: N,
                 requested: s.len(),
@@ -301,8 +296,8 @@ impl<'a> PayloadWriter<'a> {
     }
 
     /// Creates a writer without upfront minimum size check (requirement grows as fields are written).
+    #[cfg(test)]
     #[inline]
-    #[allow(dead_code)]
     pub(crate) const fn new(buffer: &'a mut [u8]) -> Self {
         Self {
             buffer,
@@ -339,26 +334,23 @@ impl<'a> PayloadWriter<'a> {
     }
 
     #[inline]
-    #[allow(dead_code)]
     pub(crate) fn write_u8(&mut self, value: u8) -> Result<(), MspEncodeError> {
         self.write_bytes(&[value])
     }
 
     /// Writes a boolean as a single byte (`0` for `false`, `1` for `true`).
     #[inline]
-    #[allow(dead_code)]
     pub(crate) fn write_bool(&mut self, value: bool) -> Result<(), MspEncodeError> {
         self.write_u8(u8::from(value))
     }
 
+    #[cfg(test)]
     #[inline]
-    #[allow(dead_code)]
     pub(crate) fn write_i8(&mut self, value: i8) -> Result<(), MspEncodeError> {
         self.write_bytes(&value.to_le_bytes())
     }
 
     #[inline]
-    #[allow(dead_code)]
     pub(crate) fn write_u16(&mut self, value: u16) -> Result<(), MspEncodeError> {
         self.write_bytes(&value.to_le_bytes())
     }
@@ -369,7 +361,6 @@ impl<'a> PayloadWriter<'a> {
     }
 
     #[inline]
-    #[allow(dead_code)]
     pub(crate) fn write_u32(&mut self, value: u32) -> Result<(), MspEncodeError> {
         self.write_bytes(&value.to_le_bytes())
     }
@@ -379,19 +370,20 @@ impl<'a> PayloadWriter<'a> {
         self.write_bytes(&value.to_le_bytes())
     }
 
+    #[cfg(test)]
     #[inline]
-    #[allow(dead_code)]
     pub(crate) fn write_u64(&mut self, value: u64) -> Result<(), MspEncodeError> {
         self.write_bytes(&value.to_le_bytes())
     }
 
     /// Writes `bytes` prefixed by its 1-byte (`u8`) length.
     #[inline]
-    #[allow(dead_code)]
     pub(crate) fn write_len_prefixed_bytes(&mut self, bytes: &[u8]) -> Result<(), MspEncodeError> {
-        let len = u8::try_from(bytes.len()).map_err(|_| MspEncodeError::PayloadTooLarge {
-            max: usize::from(u8::MAX),
-            actual: bytes.len(),
+        let len = u8::try_from(bytes.len()).map_err(|_length_conversion_error| {
+            MspEncodeError::PayloadTooLarge {
+                max: usize::from(u8::MAX),
+                actual: bytes.len(),
+            }
         })?;
         let actual = self.buffer.len();
         let next_pos = self
@@ -411,8 +403,8 @@ impl<'a> PayloadWriter<'a> {
     }
 
     /// Writes a UTF-8 string slice `s` prefixed by its 1-byte (`u8`) byte length.
+    #[cfg(test)]
     #[inline]
-    #[allow(dead_code)]
     pub(crate) fn write_len_prefixed_str(&mut self, s: &str) -> Result<(), MspEncodeError> {
         self.write_len_prefixed_bytes(s.as_bytes())
     }
@@ -437,20 +429,14 @@ fn encode_v2_frame(
     payload_len: usize,
     write_payload: impl FnOnce(&mut [u8]) -> Result<usize, MspEncodeError>,
 ) -> Result<usize, MspEncodeError> {
-    let max_payload = usize::from(u16::MAX);
-    let Ok(payload_len_u16) = u16::try_from(payload_len) else {
-        return Err(MspEncodeError::PayloadTooLarge {
-            max: max_payload,
-            actual: payload_len,
-        });
+    let too_large = MspEncodeError::PayloadTooLarge {
+        max: usize::from(u16::MAX),
+        actual: payload_len,
     };
-    let required =
-        payload_len
-            .checked_add(V2_MIN_FRAME_LEN)
-            .ok_or(MspEncodeError::PayloadTooLarge {
-                max: max_payload,
-                actual: payload_len,
-            })?;
+    let payload_len_u16 =
+        u16::try_from(payload_len).map_err(|_length_conversion_error| too_large)?;
+    let crc_idx = V2_HEADER_LEN.checked_add(payload_len).ok_or(too_large)?;
+    let required = crc_idx.checked_add(CRC_LEN).ok_or(too_large)?;
     let actual = buffer.len();
     let frame_buf = buffer
         .get_mut(..required)
@@ -469,7 +455,6 @@ fn encode_v2_frame(
         len_hi,
     ];
 
-    let crc_idx = required - CRC_LEN;
     let payload_dst = frame_buf
         .get_mut(V2_HEADER_LEN..crc_idx)
         .ok_or(MspEncodeError::BufferTooSmall { required, actual })?;
@@ -499,26 +484,20 @@ fn encode_v1_frame(
     if command_byte == V1_ENCAPSULATED_CMD {
         return Err(MspEncodeError::InvalidV1Command { command_id });
     }
-    let max_payload = usize::from(u16::MAX);
-    let Ok(payload_len_u16) = u16::try_from(payload_len) else {
-        return Err(MspEncodeError::PayloadTooLarge {
-            max: max_payload,
-            actual: payload_len,
-        });
+    let too_large = MspEncodeError::PayloadTooLarge {
+        max: usize::from(u16::MAX),
+        actual: payload_len,
     };
+    let payload_len_u16 =
+        u16::try_from(payload_len).map_err(|_length_conversion_error| too_large)?;
     let is_jumbo = payload_len >= usize::from(V1_JUMBO_SIZE);
     let payload_offset = if is_jumbo {
         V1_JUMBO_HEADER_LEN
     } else {
         V1_HEADER_LEN
     };
-    let required = payload_offset
-        .checked_add(payload_len)
-        .and_then(|n| n.checked_add(V1_CHECKSUM_LEN))
-        .ok_or(MspEncodeError::PayloadTooLarge {
-            max: max_payload,
-            actual: payload_len,
-        })?;
+    let xor_idx = payload_offset.checked_add(payload_len).ok_or(too_large)?;
+    let required = xor_idx.checked_add(V1_CHECKSUM_LEN).ok_or(too_large)?;
     let actual = buffer.len();
     let frame_buf = buffer
         .get_mut(..required)
@@ -542,7 +521,6 @@ fn encode_v1_frame(
         ];
     }
 
-    let xor_idx = required - V1_CHECKSUM_LEN;
     let payload_dst = frame_buf
         .get_mut(payload_offset..xor_idx)
         .ok_or(MspEncodeError::BufferTooSmall { required, actual })?;
@@ -567,33 +545,28 @@ fn encode_v2_over_v1_frame(
     payload_len: usize,
     write_payload: impl FnOnce(&mut [u8]) -> Result<usize, MspEncodeError>,
 ) -> Result<usize, MspEncodeError> {
-    let max_payload = usize::from(u16::MAX) - V2_INNER_OVERHEAD;
-    let Some(outer_size) = payload_len
+    const MAX_PAYLOAD: usize = u16::MAX as usize - V2_INNER_OVERHEAD;
+    const JUMBO_HEADER_LEN: usize = V2_OVER_V1_HEADER_LEN + V1_JUMBO_LENGTH_LEN;
+
+    let too_large = MspEncodeError::PayloadTooLarge {
+        max: MAX_PAYLOAD,
+        actual: payload_len,
+    };
+    let outer_size = payload_len
         .checked_add(V2_INNER_OVERHEAD)
-        .filter(|_| payload_len <= max_payload)
-    else {
-        return Err(MspEncodeError::PayloadTooLarge {
-            max: max_payload,
-            actual: payload_len,
-        });
-    };
-    let (Ok(outer_size_u16), Ok(payload_len_u16)) =
-        (u16::try_from(outer_size), u16::try_from(payload_len))
-    else {
-        return Err(MspEncodeError::PayloadTooLarge {
-            max: max_payload,
-            actual: payload_len,
-        });
-    };
+        .ok_or(too_large)?;
+    let outer_size_u16 = u16::try_from(outer_size).map_err(|_length_conversion_error| too_large)?;
+    let payload_len_u16 =
+        u16::try_from(payload_len).map_err(|_length_conversion_error| too_large)?;
     let is_jumbo = outer_size >= usize::from(V1_JUMBO_SIZE);
-    let payload_offset = V2_OVER_V1_HEADER_LEN + if is_jumbo { V1_JUMBO_LENGTH_LEN } else { 0 };
-    let required = payload_offset
-        .checked_add(payload_len)
-        .and_then(|n| n.checked_add(CRC_LEN + V1_CHECKSUM_LEN))
-        .ok_or(MspEncodeError::PayloadTooLarge {
-            max: max_payload,
-            actual: payload_len,
-        })?;
+    let payload_offset = if is_jumbo {
+        JUMBO_HEADER_LEN
+    } else {
+        V2_OVER_V1_HEADER_LEN
+    };
+    let crc_idx = payload_offset.checked_add(payload_len).ok_or(too_large)?;
+    let xor_idx = crc_idx.checked_add(CRC_LEN).ok_or(too_large)?;
+    let required = xor_idx.checked_add(V1_CHECKSUM_LEN).ok_or(too_large)?;
     let actual = buffer.len();
     let frame_buf = buffer
         .get_mut(..required)
@@ -618,7 +591,7 @@ fn encode_v2_over_v1_frame(
         ];
     } else {
         let [outer_lo, outer_hi] = outer_size_u16.to_le_bytes();
-        *prefix_mut::<{ V2_OVER_V1_HEADER_LEN + V1_JUMBO_LENGTH_LEN }>(frame_buf)? = [
+        *prefix_mut::<JUMBO_HEADER_LEN>(frame_buf)? = [
             b'$',
             b'M',
             direction.to_byte(),
@@ -634,8 +607,6 @@ fn encode_v2_over_v1_frame(
         ];
     }
 
-    let xor_idx = required - V1_CHECKSUM_LEN;
-    let crc_idx = xor_idx - CRC_LEN;
     let payload_dst = frame_buf
         .get_mut(payload_offset..crc_idx)
         .ok_or(MspEncodeError::BufferTooSmall { required, actual })?;
@@ -788,10 +759,6 @@ pub fn write_request_to_buffer(
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::unwrap_used,
-    reason = "tests use unwrap for concise assertions"
-)]
 mod tests {
     use super::*;
 
