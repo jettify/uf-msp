@@ -1549,3 +1549,74 @@ fn device_and_battery_profile_packets_roundtrip_on_supported_versions() {
         ],
     );
 }
+
+#[test]
+fn board_info_decodes_legacy_and_modern_prefixes() {
+    use uf_msp::MspBoardInfo;
+    use uf_msp::commands::MSP_BOARD_INFO;
+
+    let modern = b"ABCD\x34\x12\x02\x01\x08STM32F7X\x00\x00";
+    for payload in [b"ABCD\x34\x12".as_slice(), modern.as_slice()] {
+        for version in VERSIONS {
+            let bytes = wire(version, b'>', MSP_BOARD_INFO, payload);
+            let packet = MspPacket::from_frame_bytes(&bytes).unwrap();
+            let MspMessage::BoardInfo(board) = &packet.message else {
+                panic!("expected a board info response");
+            };
+            assert_eq!(board.identifier, *b"ABCD");
+            assert_eq!(board.hardware_revision, 0x1234);
+            let has_target = payload.len() > 6;
+            assert_eq!(board.board_type(), has_target.then_some(2));
+            assert_eq!(board.target_capabilities(), has_target.then_some(1));
+            assert_eq!(board.target_name(), has_target.then_some("STM32F7X"));
+            let mut encoded = [0; 64];
+            let len = packet.to_bytes(&mut encoded).unwrap();
+            assert_eq!(
+                encoded.get(..len),
+                Some(
+                    wire(
+                        version,
+                        b'>',
+                        MSP_BOARD_INFO,
+                        payload.get(..board.payload_size()).unwrap()
+                    )
+                    .as_slice()
+                )
+            );
+        }
+    }
+
+    assert!(matches!(
+        MspBoardInfo::from_bytes(b"ABCD\x34\x12\x00\x00\x04AB"),
+        Err(MspDecodeError::PayloadTooShort { .. })
+    ));
+}
+
+#[test]
+fn rx_map_decodes_and_encodes_betaflight_input_indexes() {
+    use uf_msp::MspRxMap;
+    use uf_msp::commands::MSP_RX_MAP;
+
+    let input_indexes = [0, 1, 3, 2, 4, 5, 6, 7];
+    for version in VERSIONS {
+        let bytes = wire(version, b'>', MSP_RX_MAP, &input_indexes);
+        let packet = MspPacket::from_frame_bytes(&bytes).unwrap();
+        assert_eq!(
+            packet.message,
+            MspMessage::RxMap(MspRxMap { input_indexes })
+        );
+        let mut encoded = [0; 32];
+        let len = packet.to_bytes(&mut encoded).unwrap();
+        assert_eq!(encoded.get(..len), Some(bytes.as_slice()));
+        assert_eq!(
+            MspPacket::from_frame_bytes(&wire(version, b'<', MSP_RX_MAP, &[]))
+                .unwrap()
+                .message,
+            MspMessage::RxMapRequest,
+        );
+    }
+    assert!(matches!(
+        MspRxMap::from_bytes(input_indexes.get(..7).unwrap()),
+        Err(MspDecodeError::PayloadTooShort { .. })
+    ));
+}

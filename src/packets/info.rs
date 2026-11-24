@@ -5,6 +5,7 @@ use crate::MspPayload;
 use crate::codec::PayloadReader;
 use crate::codec::PayloadWriter;
 use crate::commands::MSP_API_VERSION;
+use crate::commands::MSP_BOARD_INFO;
 use crate::commands::MSP_FC_VARIANT;
 use crate::commands::MSP_FC_VERSION;
 use crate::commands::MSP_FEATURE_CONFIG;
@@ -114,6 +115,87 @@ impl MspPayload for MspFcVersion {
         writer.write_u8(self.major)?;
         writer.write_u8(self.minor)?;
         writer.write_u8(self.patch)?;
+        Ok(writer.written())
+    }
+}
+
+/// Board identity prefix of a Betaflight MSP_BOARD_INFO response.
+///
+/// Older firmware can omit the board type, capabilities, and target name.
+/// Target names are limited to 40 bytes to keep owned packets compact.
+/// Fields after the target name are ignored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct MspBoardInfo {
+    pub identifier: [u8; 4],
+    pub hardware_revision: u16,
+    board_type: Option<u8>,
+    target_capabilities: Option<u8>,
+    target_name: Option<heapless::String<40, u8>>,
+}
+
+impl MspBoardInfo {
+    #[must_use]
+    pub const fn board_type(&self) -> Option<u8> {
+        self.board_type
+    }
+
+    #[must_use]
+    pub const fn target_capabilities(&self) -> Option<u8> {
+        self.target_capabilities
+    }
+
+    #[must_use]
+    pub fn target_name(&self) -> Option<&str> {
+        self.target_name.as_ref().map(heapless::String::as_str)
+    }
+}
+
+impl MspPayload for MspBoardInfo {
+    const COMMAND_ID: u16 = MSP_BOARD_INFO;
+    const MIN_PAYLOAD_SIZE: usize = 6;
+
+    fn payload_size(&self) -> usize {
+        Self::MIN_PAYLOAD_SIZE
+            .saturating_add(usize::from(self.board_type.is_some()))
+            .saturating_add(usize::from(self.target_capabilities.is_some()))
+            .saturating_add(
+                self.target_name()
+                    .map_or(0, |name| name.len().saturating_add(1)),
+            )
+    }
+
+    fn from_bytes(data: &[u8]) -> Result<Self, MspDecodeError> {
+        let mut reader =
+            PayloadReader::with_min_size(Self::COMMAND_ID, data, Self::MIN_PAYLOAD_SIZE)?;
+        Ok(Self {
+            identifier: reader.read_array::<4>()?,
+            hardware_revision: reader.read_u16()?,
+            board_type: (reader.remaining_len() > 0)
+                .then(|| reader.read_u8())
+                .transpose()?,
+            target_capabilities: (reader.remaining_len() > 0)
+                .then(|| reader.read_u8())
+                .transpose()?,
+            target_name: (reader.remaining_len() > 0)
+                .then(|| reader.read_len_prefixed_string())
+                .transpose()?,
+        })
+    }
+
+    fn to_bytes(&self, buffer: &mut [u8]) -> Result<usize, MspEncodeError> {
+        let mut writer = PayloadWriter::with_min_size(buffer, self.payload_size())?;
+        writer.write_bytes(&self.identifier)?;
+        writer.write_u16(self.hardware_revision)?;
+        if let Some(board_type) = self.board_type {
+            writer.write_u8(board_type)?;
+        }
+        if let Some(capabilities) = self.target_capabilities {
+            writer.write_u8(capabilities)?;
+        }
+        if let Some(name) = self.target_name() {
+            writer.write_len_prefixed_str(name)?;
+        }
         Ok(writer.written())
     }
 }
