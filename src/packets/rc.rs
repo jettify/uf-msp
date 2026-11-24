@@ -7,6 +7,7 @@ use crate::MspPayload;
 use crate::codec::PayloadReader;
 use crate::codec::PayloadWriter;
 use crate::commands::MSP_RC;
+use crate::commands::MSP_RX_MAP;
 use crate::commands::MSP_SET_RAW_RC;
 
 /// Maximum number of RC channels supported by Betaflight in `MSP_RC` and `MSP_SET_RAW_RC`.
@@ -94,6 +95,33 @@ impl MspPayload for MspRc {
 
     fn to_bytes(&self, buffer: &mut [u8]) -> Result<usize, MspEncodeError> {
         encode_channels(self.channels(), buffer)
+    }
+}
+
+/// Betaflight MSP_RX_MAP response payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct MspRxMap {
+    /// Zero-based receiver input indexes in logical roll, pitch, yaw, throttle, AUX1–4 order.
+    pub input_indexes: [u8; 8],
+}
+
+impl MspPayload for MspRxMap {
+    const COMMAND_ID: u16 = MSP_RX_MAP;
+    const MIN_PAYLOAD_SIZE: usize = 8;
+
+    fn from_bytes(data: &[u8]) -> Result<Self, MspDecodeError> {
+        let mut reader =
+            PayloadReader::with_min_size(Self::COMMAND_ID, data, Self::MIN_PAYLOAD_SIZE)?;
+        Ok(Self {
+            input_indexes: reader.read_array()?,
+        })
+    }
+
+    fn to_bytes(&self, buffer: &mut [u8]) -> Result<usize, MspEncodeError> {
+        let mut writer = PayloadWriter::with_min_size(buffer, Self::MIN_PAYLOAD_SIZE)?;
+        writer.write_bytes(&self.input_indexes)?;
+        Ok(writer.written())
     }
 }
 

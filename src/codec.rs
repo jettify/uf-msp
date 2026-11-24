@@ -206,7 +206,6 @@ impl<'a> PayloadReader<'a> {
     }
 
     /// Reads a 1-byte length prefix (`u8`) followed by that many bytes.
-    #[cfg(test)]
     #[inline]
     pub(crate) fn read_len_prefixed_bytes(&mut self) -> Result<&'a [u8], MspDecodeError> {
         let len = usize::from(self.read_u8()?);
@@ -214,7 +213,6 @@ impl<'a> PayloadReader<'a> {
     }
 
     /// Reads a 1-byte length prefix (`u8`) followed by a UTF-8 string slice of that byte length.
-    #[cfg(test)]
     #[inline]
     pub(crate) fn read_len_prefixed_str(&mut self) -> Result<&'a str, MspDecodeError> {
         let bytes = self.read_len_prefixed_bytes()?;
@@ -224,7 +222,6 @@ impl<'a> PayloadReader<'a> {
     }
 
     /// Reads a 1-byte length prefix (`u8`) followed by a UTF-8 string into a `heapless::String<N, u8>`.
-    #[cfg(test)]
     #[inline]
     pub(crate) fn read_len_prefixed_string<const N: usize>(
         &mut self,
@@ -403,7 +400,6 @@ impl<'a> PayloadWriter<'a> {
     }
 
     /// Writes a UTF-8 string slice `s` prefixed by its 1-byte (`u8`) byte length.
-    #[cfg(test)]
     #[inline]
     pub(crate) fn write_len_prefixed_str(&mut self, s: &str) -> Result<(), MspEncodeError> {
         self.write_len_prefixed_bytes(s.as_bytes())

@@ -6,6 +6,7 @@ mod telemetry;
 pub use info::MAX_CRAFT_NAME_LEN;
 pub use info::MAX_FLIGHT_MODE_EXT_BYTES;
 pub use info::MspApiVersion;
+pub use info::MspBoardInfo;
 pub use info::MspFcVariant;
 pub use info::MspFcVersion;
 pub use info::MspFeatureConfig;
@@ -23,6 +24,7 @@ pub use power::MspBatteryProfileRequest;
 pub use power::MspBatteryState;
 pub use rc::MAX_RC_CHANNELS;
 pub use rc::MspRc;
+pub use rc::MspRxMap;
 pub use rc::MspSetRawRc;
 pub use telemetry::MspAltitude;
 pub use telemetry::MspAttitude;
@@ -45,6 +47,7 @@ use crate::commands::MSP_ANALOG;
 use crate::commands::MSP_API_VERSION;
 use crate::commands::MSP_ATTITUDE;
 use crate::commands::MSP_BATTERY_STATE;
+use crate::commands::MSP_BOARD_INFO;
 use crate::commands::MSP_COMP_GPS;
 use crate::commands::MSP_EEPROM_WRITE;
 use crate::commands::MSP_FC_VARIANT;
@@ -55,6 +58,7 @@ use crate::commands::MSP_RAW_GPS;
 use crate::commands::MSP_RAW_IMU;
 use crate::commands::MSP_RC;
 use crate::commands::MSP_REBOOT;
+use crate::commands::MSP_RX_MAP;
 use crate::commands::MSP_SET_NAME;
 use crate::commands::MSP_SET_RAW_RC;
 use crate::commands::MSP_STATUS;
@@ -226,12 +230,14 @@ define_msp_messages! {
     MSP_API_VERSION      => (ApiVersionRequest, ApiVersion(MspApiVersion)),
     MSP_FC_VARIANT       => (FcVariantRequest, FcVariant(MspFcVariant)),
     MSP_FC_VERSION       => (FcVersionRequest, FcVersion(MspFcVersion)),
+    MSP_BOARD_INFO       => (BoardInfoRequest, BoardInfo(MspBoardInfo)),
     MSP_STATUS           => (StatusRequest, Status(MspStatus)),
     MSP_NAME             => (NameRequest, Name(MspName)),
     MSP_RAW_IMU          => (RawImuRequest, RawImu(MspRawImu)),
     MSP_ATTITUDE         => (AttitudeRequest, Attitude(MspAttitude)),
     MSP_ALTITUDE         => (AltitudeRequest, Altitude(MspAltitude)),
     MSP_RC               => (RcRequest, Rc(MspRc)),
+    MSP_RX_MAP           => (RxMapRequest, RxMap(MspRxMap)),
     MSP_FEATURE_CONFIG   => (FeatureConfigRequest, FeatureConfig(MspFeatureConfig)),
     MSP_UID              => (UidRequest, Uid(MspUid)),
     MSP_RAW_GPS          => (RawGpsRequest, RawGps(MspRawGps)),
