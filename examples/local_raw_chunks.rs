@@ -17,7 +17,11 @@ fn main() -> Result<(), MspEncodeError> {
     )?;
 
     let mut parser = MspParser::<32>::new();
-    for mut input in bytes[..len].chunks(3) {
+    let frame_bytes = bytes.get(..len).ok_or(MspEncodeError::BufferTooSmall {
+        required: len,
+        actual: bytes.len(),
+    })?;
+    for mut input in frame_bytes.chunks(3) {
         while let Some(frame) = parser.next(&mut input) {
             println!(
                 "cmd={:#04x}, payload={:?}",

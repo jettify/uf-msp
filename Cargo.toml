@@ -39,3 +39,38 @@ path = "examples/local_raw_chunks.rs"
 
 [features]
 "defmt" = ["dep:defmt", "heapless/defmt"]
+
+[lints.clippy]
+# Explicit panics and aborts
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+exit = "deny"
+
+# Implicit panics (bounds, slicing, pattern matching)
+indexing_slicing = "deny"
+string_slice = "deny"
+panic_in_result_fn = "deny"
+fallible_impl_from = "deny"
+
+# Arithmetic & casting safety
+arithmetic_side_effects = "warn"
+cast_possible_truncation = "warn"
+cast_possible_wrap = "warn"
+cast_sign_loss = "warn"
+
+# Embedded and stack safety
+large_stack_arrays = "deny"
+large_types_passed_by_value = "warn"
+large_futures = "warn"
+
+# Error handling and code hygiene
+allow_attributes_without_reason = "deny"
+undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "deny"
+map_err_ignore = "deny"
+try_err = "deny"
+return_and_then = "warn"

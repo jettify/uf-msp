@@ -208,7 +208,7 @@ fn copy_craft_name(name: &str) -> Result<heapless::String<MAX_CRAFT_NAME_LEN, u8
     let mut stored = heapless::String::new();
     stored
         .push_str(name)
-        .map_err(|_| CapacityError::new(MAX_CRAFT_NAME_LEN, name.len()))?;
+        .map_err(|_capacity_error| CapacityError::new(MAX_CRAFT_NAME_LEN, name.len()))?;
     Ok(stored)
 }
 
@@ -320,8 +320,10 @@ impl MspStatusExtended {
     /// Returns a capacity error if the input exceeds `MAX_FLIGHT_MODE_EXT_BYTES`.
     /// On error, the previous flag bytes are preserved.
     pub fn set_flight_mode_flags_ext(&mut self, flags: &[u8]) -> Result<(), CapacityError> {
-        self.flight_mode_flags_ext = heapless::Vec::from_slice(flags)
-            .map_err(|_| CapacityError::new(MAX_FLIGHT_MODE_EXT_BYTES, flags.len()))?;
+        self.flight_mode_flags_ext =
+            heapless::Vec::from_slice(flags).map_err(|_capacity_error| {
+                CapacityError::new(MAX_FLIGHT_MODE_EXT_BYTES, flags.len())
+            })?;
         Ok(())
     }
 
@@ -378,7 +380,10 @@ impl MspPayload for MspStatus {
             return Self::MIN_PAYLOAD_SIZE;
         };
         let tail_size = ext.tail.as_ref().map_or(0, MspStatusTail::encoded_size);
-        Self::MIN_PAYLOAD_SIZE + 5 + ext.flight_mode_flags_ext.len() + 6 + tail_size
+        const EXTENDED_MIN_PAYLOAD_SIZE: usize = MspStatus::MIN_PAYLOAD_SIZE + 5 + 6;
+        EXTENDED_MIN_PAYLOAD_SIZE
+            .saturating_add(ext.flight_mode_flags_ext.len())
+            .saturating_add(tail_size)
     }
 
     fn from_bytes(data: &[u8]) -> Result<Self, MspDecodeError> {
@@ -542,7 +547,11 @@ impl MspPayload for MspRebootResponse {
     const MIN_PAYLOAD_SIZE: usize = 1;
 
     fn payload_size(&self) -> usize {
-        1 + usize::from(self.msc_ready.is_some())
+        if self.msc_ready.is_some() {
+            Self::MIN_PAYLOAD_SIZE + 1
+        } else {
+            Self::MIN_PAYLOAD_SIZE
+        }
     }
 
     fn from_bytes(data: &[u8]) -> Result<Self, MspDecodeError> {

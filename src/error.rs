@@ -165,7 +165,11 @@ impl MspDecodeError {
                 capacity,
                 requested,
             }),
-            _ => None,
+            Self::UnsupportedCommand { .. }
+            | Self::RemoteError { .. }
+            | Self::PayloadTooShort { .. }
+            | Self::InvalidUtf8 { .. }
+            | Self::InvalidPayload { .. } => None,
         }
     }
 }

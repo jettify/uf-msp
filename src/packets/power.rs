@@ -25,7 +25,11 @@ impl MspPayload for MspAnalog {
     const MIN_PAYLOAD_SIZE: usize = 7;
 
     fn payload_size(&self) -> usize {
-        Self::MIN_PAYLOAD_SIZE + 2 * usize::from(self.voltage_centivolts.is_some())
+        if self.voltage_centivolts.is_some() {
+            Self::MIN_PAYLOAD_SIZE + 2
+        } else {
+            Self::MIN_PAYLOAD_SIZE
+        }
     }
 
     fn from_bytes(data: &[u8]) -> Result<Self, MspDecodeError> {
@@ -76,7 +80,11 @@ impl MspPayload for MspBatteryState {
     const MIN_PAYLOAD_SIZE: usize = 9;
 
     fn payload_size(&self) -> usize {
-        Self::MIN_PAYLOAD_SIZE + 2 * usize::from(self.voltage_centivolts.is_some())
+        if self.voltage_centivolts.is_some() {
+            Self::MIN_PAYLOAD_SIZE + 2
+        } else {
+            Self::MIN_PAYLOAD_SIZE
+        }
     }
 
     fn from_bytes(data: &[u8]) -> Result<Self, MspDecodeError> {
