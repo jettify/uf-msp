@@ -44,7 +44,7 @@ fn main() {
 
 ### Read and write raw frames
 
-Use the raw API for commands without a typed codec. This example encodes an
+Use the raw API to inspect wire frames. This example encodes an
 `MSP_BOARD_INFO` request and feeds it back to the parser in chunks. Run it
 with `cargo run --example raw_chunks`.
 
@@ -95,6 +95,12 @@ cargo run --manifest-path examples/attitude/Cargo.toml -- /dev/cu.usbmodemYOUR_B
 ```
 
 
+### Inspect a Betaflight controller from the terminal
+
+The standalone [bfctl example](examples/bfctl) lists serial ports and reads
+controller information, status, receiver inputs, attitude, and battery telemetry
+over MSP.
+
 ## Implementation status
 
 **Legend:**
@@ -144,7 +150,7 @@ cargo run --manifest-path examples/attitude/Cargo.toml -- /dev/cu.usbmodemYOUR_B
 | `MSP_SET_PID_CONTROLLER` | `0x3C` | 🔴 | Set PID controller |
 | `MSP_ARMING_CONFIG` | `0x3D` | 🔴 | Get arming configuration |
 | `MSP_SET_ARMING_CONFIG` | `0x3E` | 🔴 | Set arming configuration |
-| `MSP_RX_MAP` | `0x40` | 🔴 | Get RX map (also returns number of channels total) |
+| `MSP_RX_MAP` | `0x40` | 🟢 | Polling request and eight Betaflight receiver input indexes |
 | `MSP_SET_RX_MAP` | `0x41` | 🔴 | Set RX map, numchannels to set comes from MSP_RX_MAP |
 | `MSP_REBOOT` | `0x44` | 🟢 | Owned parameterized request and response decoding; Reboot settings |
 | `MSP_DATAFLASH_SUMMARY` | `0x46` | 🔴 | Get description of dataflash chip |
